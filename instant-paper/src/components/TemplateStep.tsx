@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { motion } from 'motion/react'
-import { ArrowLeft, CheckCircle2, PenLine, Sparkles, Loader2 } from 'lucide-react'
+import { ArrowLeft, CheckCircle2, PenLine, Sparkles, Loader2, X } from 'lucide-react'
 import type { Paper } from '../types'
 import { useStore } from '../store'
 import { TEMPLATES } from '../lib/templates'
@@ -13,6 +13,7 @@ export function TemplateStep({ paper }: { paper: Paper }) {
   const updatePaper = useStore((s) => s.updatePaper)
   const setView = useStore((s) => s.setView)
   const generate = useStore((s) => s.generate)
+  const cancel = useStore((s) => s.cancelGenerate)
   const progress = useStore((s) => s.progress[paper.id])
   const school = useStore((s) => s.settings.schoolName)
   const generating = paper.status === 'generating'
@@ -33,7 +34,7 @@ export function TemplateStep({ paper }: { paper: Paper }) {
       </div>
 
       {generating ? (
-        <Scanning paper={paper} message={progress ?? 'Starting…'} />
+        <Scanning paper={paper} message={progress ?? 'Starting…'} onCancel={() => cancel(paper.id)} />
       ) : (
         <div role="radiogroup" aria-label="Templates" className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
           {TEMPLATES.map((t, i) => {
@@ -97,7 +98,7 @@ export function TemplateStep({ paper }: { paper: Paper }) {
   )
 }
 
-function Scanning({ paper, message }: { paper: Paper; message: string }) {
+function Scanning({ paper, message, onCancel }: { paper: Paper; message: string; onCancel: () => void }) {
   return (
     <div className="grid items-center gap-8 rounded-3xl bg-white p-6 ring-1 ring-ink-100 sm:grid-cols-[minmax(0,320px)_1fr] sm:p-10 dark:bg-white/5 dark:ring-white/10" aria-busy="true">
       <div className="relative mx-auto w-full max-w-[320px]">
@@ -124,7 +125,8 @@ function Scanning({ paper, message }: { paper: Paper; message: string }) {
             </motion.li>
           ))}
         </ul>
-        <p className="mt-6 text-xs text-ink-400">Usually takes 10–40 seconds per paper on the free tier.</p>
+        <p className="mt-6 text-xs text-ink-400">Usually takes 10–60 seconds per paper on the free tier.</p>
+        <Button variant="ghost" size="sm" className="mt-3" icon={<X size={14} />} onClick={onCancel}>Stop</Button>
       </div>
     </div>
   )
