@@ -1,6 +1,6 @@
 import type { PaperHeader, Section, SectionType, Settings } from '../types'
 import { uid } from './id'
-import { AIError, extractRaw, type Progress } from './aiCore'
+import { AIError, extractRaw, validSetup, type GeminiSetup, type Progress } from './aiCore'
 
 export { AIError, listGeminiModels, prettyModel } from './aiCore'
 
@@ -8,6 +8,7 @@ export interface ExtractResult {
   header: PaperHeader
   sections: Section[]
   provider: string
+  seconds: number
 }
 
 /* ------------------------------------------------------------------ */
@@ -31,6 +32,10 @@ export async function checkServerAI(): Promise<ServerAIStatus> {
   }
 }
 
+const HINT_KEY = 'instant-paper:ai-setup-v2'
+const loadHint = (): GeminiSetup | null => { try { return validSetup(JSON.parse(localStorage.getItem(HINT_KEY) ?? 'null')) } catch { return null } }
+const saveHint = (h?: GeminiSetup) => { try { if (h) localStorage.setItem(HINT_KEY, JSON.stringify(h)) } catch { /* private mode */ } }
+
 const MAX_BODY = 4_000_000 // Vercel allows 4.5 MB per request; keep a margin.
 
 /** Shrink photos until the whole request fits the hosting limit. */
@@ -38,7 +43,7 @@ async function fitImages(images: string[]): Promise<string[]> {
   const { compressDataUrl } = await import('./image')
   const size = (arr: string[]) => arr.reduce((n, d) => n + d.length, 0)
   let out = images
-  for (const [side, q] of [[1800, 0.8], [1500, 0.75], [1250, 0.7], [1000, 0.65]] as const) {
+  for (const [side, q] of [[1400, 0.75], [1250, 0.7], [1000, 0.65]] as const) {
     if (size(out) < MAX_BODY) break
     out = await Promise.all(images.map((d) => compressDataUrl(d, side, q)))
   }
@@ -48,7 +53,7 @@ async function fitImages(images: string[]): Promise<string[]> {
 
 async function extractViaServer(images: string[], code: string, onProgress: Progress, signal?: AbortSignal) {
   onProgress('Uploading photos…')
-  const body = JSON.stringify({ images: await fitImages(images), code })
+  const body = JSON.stringify({ images: await fitImages(images), code, hint: loadHint() })
   onProgress('Reading handwriting with the school AI…')
   let res: Response
   try {
@@ -59,14 +64,15 @@ async function extractViaServer(images: string[], code: string, onProgress: Prog
     if ((e as Error).name === 'TimeoutError' || (e as Error).name === 'AbortError') throw new AIError('The AI is taking too long right now. Please try again in a minute.', 'timeout')
     throw new AIError('No internet connection. Check your network and try again.', 'network')
   }
-  let data: { raw?: unknown; provider?: string; error?: string; kind?: string } = {}
+  let data: { raw?: unknown; provider?: string; setup?: GeminiSetup; ms?: number; error?: string; kind?: string } = {}
   try { data = await res.json() } catch { /* non-JSON error page */ }
   if (!res.ok) {
     if (res.status === 413) throw new AIError('The photos are too large. Try fewer pages per paper.', 'other')
     if (res.status === 504) throw new AIError('The AI took too long. Please try again.', 'quota')
     throw new AIError(data.error || `Server error ${res.status}`, (data.kind as AIError['kind']) || 'other')
   }
-  return { raw: data.raw, provider: data.provider ?? 'School AI' }
+  saveHint(data.setup)
+  return { raw: data.raw, provider: data.provider ?? 'School AI', ms: data.ms }
 }
 
 /* ------------------------------------------------------------------ */
@@ -77,13 +83,19 @@ export async function extractPaper(images: string[], s: Settings, server: Server
   if (!images.length) throw new AIError('Add at least one photo of the paper first.', 'other')
   // A personal key (Settings → Advanced) always wins; otherwise use the school's shared AI.
   const personal = !!(s.geminiKey || s.groqKey)
-  let res: { raw: unknown; provider: string }
+  // 1600px is plenty for handwriting and uploads/reads much faster.
+  const { compressDataUrl } = await import('./image')
+  images = await Promise.all(images.map((d) => compressDataUrl(d, 1600, 0.82)))
+  const t0 = Date.now()
+  let res: { raw: unknown; provider: string; ms?: number }
   if (personal) {
     const cancelled = new Promise<never>((_, rej) => signal?.addEventListener('abort', () => rej(new AIError('Cancelled.', 'other'))))
-    res = await Promise.race([extractRaw(images, s, onProgress), cancelled])
+    const r = await Promise.race([extractRaw(images, { ...s, hint: loadHint() }, onProgress), cancelled])
+    saveHint(r.setup)
+    res = r
   } else if (server.available) res = await extractViaServer(images, s.accessCode ?? '', onProgress, signal)
   else throw new AIError('AI is not set up yet. Ask the administrator to add the school AI key, or add your own key in Settings.', 'key')
-  return { ...normalize(res.raw), provider: res.provider }
+  return { ...normalize(res.raw), provider: res.provider, seconds: Math.max(1, Math.round((Date.now() - t0) / 1000)) }
 }
 
 /* ------------------------------------------------------------------ */
