@@ -14,17 +14,20 @@ export interface ExtractResult {
 /*  School AI (server function holding the key)                        */
 /* ------------------------------------------------------------------ */
 
-export interface ServerAIStatus { available: boolean; needsCode: boolean }
+export interface ServerAIStatus { available: boolean; needsCode: boolean; reason?: string }
 
 /** Ask the deployment whether a shared school AI key is configured (api/extract). */
 export async function checkServerAI(): Promise<ServerAIStatus> {
   try {
-    const res = await fetch('/api/extract', { method: 'GET', headers: { Accept: 'application/json' } })
-    if (!res.ok || !(res.headers.get('content-type') ?? '').includes('json')) return { available: false, needsCode: false }
+    const res = await fetch('/api/extract', { method: 'GET', headers: { Accept: 'application/json' }, cache: 'no-store' })
+    const isJson = (res.headers.get('content-type') ?? '').includes('json')
+    if (res.status === 404 || (res.ok && !isJson)) return { available: false, needsCode: false, reason: 'The server function (api/extract) is not deployed. Check that the “api” folder is in the GitHub repo next to package.json.' }
+    if (!res.ok) return { available: false, needsCode: false, reason: `The server function crashed (error ${res.status}). Open Vercel → Deployments → Logs to see why.` }
     const d = await res.json()
-    return { available: !!d.ai, needsCode: !!d.needsCode }
+    if (!d.ai) return { available: false, needsCode: false, reason: 'The server is running but GEMINI_API_KEY is missing. Add it in Vercel → Settings → Environment Variables (tick “Production”), then Redeploy.' }
+    return { available: true, needsCode: !!d.needsCode }
   } catch {
-    return { available: false, needsCode: false }
+    return { available: false, needsCode: false, reason: 'Could not reach the server function.' }
   }
 }
 
@@ -43,14 +46,17 @@ async function fitImages(images: string[]): Promise<string[]> {
   return out
 }
 
-async function extractViaServer(images: string[], code: string, onProgress: Progress) {
+async function extractViaServer(images: string[], code: string, onProgress: Progress, signal?: AbortSignal) {
   onProgress('Uploading photos…')
   const body = JSON.stringify({ images: await fitImages(images), code })
   onProgress('Reading handwriting with the school AI…')
   let res: Response
   try {
-    res = await fetch('/api/extract', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
-  } catch {
+    const timeout = AbortSignal.timeout(295_000)
+    res = await fetch('/api/extract', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal: signal ? AbortSignal.any([signal, timeout]) : timeout })
+  } catch (e) {
+    if (signal?.aborted) throw new AIError('Cancelled.', 'other')
+    if ((e as Error).name === 'TimeoutError' || (e as Error).name === 'AbortError') throw new AIError('The AI is taking too long right now. Please try again in a minute.', 'timeout')
     throw new AIError('No internet connection. Check your network and try again.', 'network')
   }
   let data: { raw?: unknown; provider?: string; error?: string; kind?: string } = {}
@@ -67,13 +73,15 @@ async function extractViaServer(images: string[], code: string, onProgress: Prog
 /*  Main entry                                                         */
 /* ------------------------------------------------------------------ */
 
-export async function extractPaper(images: string[], s: Settings, server: ServerAIStatus, onProgress: Progress = () => {}): Promise<ExtractResult> {
+export async function extractPaper(images: string[], s: Settings, server: ServerAIStatus, onProgress: Progress = () => {}, signal?: AbortSignal): Promise<ExtractResult> {
   if (!images.length) throw new AIError('Add at least one photo of the paper first.', 'other')
   // A personal key (Settings → Advanced) always wins; otherwise use the school's shared AI.
   const personal = !!(s.geminiKey || s.groqKey)
   let res: { raw: unknown; provider: string }
-  if (personal) res = await extractRaw(images, s, onProgress)
-  else if (server.available) res = await extractViaServer(images, s.accessCode ?? '', onProgress)
+  if (personal) {
+    const cancelled = new Promise<never>((_, rej) => signal?.addEventListener('abort', () => rej(new AIError('Cancelled.', 'other'))))
+    res = await Promise.race([extractRaw(images, s, onProgress), cancelled])
+  } else if (server.available) res = await extractViaServer(images, s.accessCode ?? '', onProgress, signal)
   else throw new AIError('AI is not set up yet. Ask the administrator to add the school AI key, or add your own key in Settings.', 'key')
   return { ...normalize(res.raw), provider: res.provider }
 }
