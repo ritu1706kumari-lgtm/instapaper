@@ -39,6 +39,7 @@ interface State {
   setPair: (id: string, sid: string, pid: string, patch: Partial<MatchPair>) => void
 
   generate: (id: string) => Promise<boolean>
+  cancelGenerate: (id: string) => void
   generateMany: (ids: string[]) => Promise<void>
 }
 
@@ -52,6 +53,7 @@ const defaultSettings: Settings = {
 }
 
 const first = samplePaper()
+const controllers = new Map<string, AbortController>()
 
 export const useStore = create<State>((set, get) => ({
   hydrated: false,
@@ -134,8 +136,10 @@ export const useStore = create<State>((set, get) => ({
     const { settings } = get()
     get().updatePaper(id, (p) => ({ ...p, status: 'generating', error: undefined }))
     const setProgress = (msg: string) => set((s) => ({ progress: { ...s.progress, [id]: msg } }))
+    const ctrl = new AbortController()
+    controllers.set(id, ctrl)
     try {
-      const res = await extractPaper(paper.photos.map((p) => p.dataUrl), settings, get().serverAI, setProgress)
+      const res = await extractPaper(paper.photos.map((p) => p.dataUrl), settings, get().serverAI, setProgress, ctrl.signal)
       get().updatePaper(id, (p) => ({
         ...p,
         status: 'done',
@@ -153,14 +157,22 @@ export const useStore = create<State>((set, get) => ({
       return true
     } catch (e) {
       const msg = (e as Error).message
+      if (ctrl.signal.aborted) {
+        get().updatePaper(id, (p) => ({ ...p, status: p.sections.length ? 'done' : 'ready', error: undefined }))
+        get().toast('info', 'Stopped. You can try again whenever you like.')
+        return false
+      }
       get().updatePaper(id, (p) => ({ ...p, status: 'error', error: msg }))
       get().toast('error', msg)
       if (/key|code/i.test(msg)) set({ settingsOpen: true })
       return false
     } finally {
+      controllers.delete(id)
       set((s) => { const pr = { ...s.progress }; delete pr[id]; return { progress: pr } })
     }
   },
+
+  cancelGenerate: (id) => { controllers.get(id)?.abort() },
 
   generateMany: async (ids) => {
     // One at a time keeps us inside the free per-minute limits.
