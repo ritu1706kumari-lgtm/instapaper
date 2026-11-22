@@ -1,0 +1,10 @@
+{
+  "name": "Instant Paper",
+  "short_name": "Instant Paper",
+  "description": "Exam papers from handwritten photos",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f7f4ec",
+  "theme_color": "#252d63",
+  "icons": [{ "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}
