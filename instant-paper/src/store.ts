@@ -153,7 +153,7 @@ export const useStore = create<State>((set, get) => ({
       }))
       set((s) => ({ views: { ...s.views, [id]: 'editor' } }))
       const diagrams = res.sections.flatMap((s) => s.questions).filter((q) => q.needsDiagram).length
-      get().toast('success', `Paper ready (read by ${res.provider}).${diagrams ? ` ${diagrams} question(s) need a diagram — look for the yellow badges.` : ' Check it once and print!'}`)
+      get().toast('success', `Paper ready in ${res.seconds}s (read by ${res.provider}).${diagrams ? ` ${diagrams} question(s) need a diagram — look for the yellow badges.` : ' Check it once and print!'}`)
       return true
     } catch (e) {
       const msg = (e as Error).message
