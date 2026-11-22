@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { motion } from 'motion/react'
 import { ArrowLeft, CheckCircle2, PenLine, Sparkles, Loader2, X } from 'lucide-react'
 import type { Paper } from '../types'
@@ -99,6 +99,8 @@ export function TemplateStep({ paper }: { paper: Paper }) {
 }
 
 function Scanning({ paper, message, onCancel }: { paper: Paper; message: string; onCancel: () => void }) {
+  const [secs, setSecs] = useState(0)
+  useEffect(() => { const t = setInterval(() => setSecs((x) => x + 1), 1000); return () => clearInterval(t) }, [])
   return (
     <div className="grid items-center gap-8 rounded-3xl bg-white p-6 ring-1 ring-ink-100 sm:grid-cols-[minmax(0,320px)_1fr] sm:p-10 dark:bg-white/5 dark:ring-white/10" aria-busy="true">
       <div className="relative mx-auto w-full max-w-[320px]">
@@ -125,7 +127,7 @@ function Scanning({ paper, message, onCancel }: { paper: Paper; message: string;
             </motion.li>
           ))}
         </ul>
-        <p className="mt-6 text-xs text-ink-400">Usually takes 10–60 seconds per paper on the free tier.</p>
+        <p className="mt-6 text-xs text-ink-400"><span className="font-semibold tabular-nums text-ink-600 dark:text-ink-200" aria-hidden>{secs}s</span> · usually 10–30 seconds per paper</p>
         <Button variant="ghost" size="sm" className="mt-3" icon={<X size={14} />} onClick={onCancel}>Stop</Button>
       </div>
     </div>
