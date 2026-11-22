@@ -7,7 +7,7 @@
  *   ACCESS_CODE      (optional)  a school code users must type once, to keep strangers out
  *   GEMINI_MODEL     (optional)  force a model, e.g. gemini-3.5-flash (default: automatic)
  */
-import { AIError, extractRaw } from '../src/lib/aiCore'
+import { AIError, extractRaw } from '../src/lib/aiCore.js'
 
 export const maxDuration = 120
 
