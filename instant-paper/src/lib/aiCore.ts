@@ -86,12 +86,15 @@ const JSON_SHAPE_HINT = `JSON shape:
 /*  Errors                                                             */
 /* ------------------------------------------------------------------ */
 
-export type AIErrorKind = 'key' | 'quota' | 'model' | 'network' | 'parse' | 'other'
+export type AIErrorKind = 'key' | 'quota' | 'model' | 'network' | 'parse' | 'request' | 'timeout' | 'other'
 export class AIError extends Error {
   kind: AIErrorKind
-  constructor(message: string, kind: AIErrorKind) {
+  /** Model Google suggests instead, when it retires one. */
+  suggested?: string
+  constructor(message: string, kind: AIErrorKind, suggested?: string) {
     super(message)
     this.kind = kind
+    this.suggested = suggested
   }
 }
 
@@ -103,14 +106,15 @@ export type Progress = (msg: string) => void
 /* ------------------------------------------------------------------ */
 
 const GEMINI = 'https://generativelanguage.googleapis.com/v1beta'
-const FALLBACK_GEMINI_MODELS = ['gemini-flash-latest', 'gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-flash-lite-latest', 'gemini-2.5-flash-lite']
+/** Aliases Google keeps pointing at its current Flash models, so they never go stale. */
+const FALLBACK_GEMINI_MODELS = ['gemini-flash-latest', 'gemini-flash-lite-latest']
 
 let cachedModels: { key: string; list: string[] } | null = null
 
 /** Ask Google which models this key can use and rank the Flash vision models (free-tier friendly) first. */
 export async function listGeminiModels(key: string): Promise<string[]> {
   if (cachedModels?.key === key) return cachedModels.list
-  const res = await fetch(`${GEMINI}/models?pageSize=200&key=${encodeURIComponent(key)}`)
+  const res = await fetch(`${GEMINI}/models?pageSize=200`, { headers: { 'x-goog-api-key': key } })
   if (!res.ok) throw await geminiError(res)
   const data = await res.json()
   const names: string[] = (data.models ?? [])
@@ -136,37 +140,78 @@ export async function listGeminiModels(key: string): Promise<string[]> {
 async function geminiError(res: Response): Promise<AIError> {
   let msg = ''
   try { msg = (await res.json())?.error?.message ?? '' } catch { /* ignore */ }
-  if (res.status === 400 && /api key/i.test(msg)) return new AIError('Your Gemini API key is not valid. Please check it in Settings.', 'key')
+  const suggested = msg.match(/use (?:models\/)?(gemini-[\w.-]+)/i)?.[1]
+  if (res.status === 400 && /api key/i.test(msg)) return new AIError('The Gemini API key is not valid.', 'key')
   if (res.status === 403) return new AIError('This Gemini API key is not allowed to use the API. Create a new key in Google AI Studio.', 'key')
   if (res.status === 429) return new AIError('Free daily/minute limit reached for this model.', 'quota')
-  if (res.status === 404 || /not found|not supported/i.test(msg)) return new AIError(`Model unavailable: ${msg}`, 'model')
+  if (res.status === 404 || /not found|not supported|no longer available|deprecated|retired/i.test(msg)) return new AIError(`Model unavailable: ${msg}`, 'model', suggested)
+  if (res.status === 400) return new AIError(`Request format not accepted: ${msg}`, 'request')
   if (res.status >= 500) return new AIError('Google AI is busy right now.', 'quota')
   return new AIError(msg || `Gemini error ${res.status}`, 'other')
 }
 
-export async function geminiCall(key: string, model: string, images: string[]): Promise<unknown> {
-  const parts: object[] = [{ text: PROMPT }]
+/** Same schema in standard (lowercase) JSON-Schema form, as newer models expect. */
+function toJsonSchema(node: unknown): unknown {
+  if (Array.isArray(node)) return node.map(toJsonSchema)
+  if (node && typeof node === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(node)) out[k] = k === 'type' && typeof v === 'string' ? v.toLowerCase() : toJsonSchema(v)
+    return out
+  }
+  return node
+}
+const JSON_SCHEMA = toJsonSchema(SCHEMA)
+
+/**
+ * Request styles, newest first. If a model rejects one (400), we try the next:
+ *  0 = JSON-Schema structured output, 1 = classic responseSchema, 2 = JSON mode only, 3 = plain prompt.
+ */
+function generationConfig(style: number) {
+  switch (style) {
+    case 0: return { responseMimeType: 'application/json', responseJsonSchema: JSON_SCHEMA }
+    case 1: return { responseMimeType: 'application/json', responseSchema: SCHEMA }
+    case 2: return { responseMimeType: 'application/json' }
+    default: return undefined
+  }
+}
+
+async function withTimeout<T>(ms: number, fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const ctrl = new AbortController()
+  const t = setTimeout(() => ctrl.abort(), ms)
+  try {
+    return await fn(ctrl.signal)
+  } catch (e) {
+    if ((e as Error).name === 'AbortError') throw new AIError('The AI took too long to answer.', 'timeout')
+    throw e
+  } finally {
+    clearTimeout(t)
+  }
+}
+
+export async function geminiCall(key: string, model: string, images: string[], style = 0, timeoutMs = 100_000): Promise<unknown> {
+  const parts: object[] = [{ text: style >= 2 ? `${PROMPT}\n\n${JSON_SHAPE_HINT}` : PROMPT }]
   images.forEach((d, i) => {
     const [meta, data] = d.split(',')
     parts.push({ text: `Page ${i + 1}:` })
     parts.push({ inline_data: { mime_type: meta.match(/data:(.*?);/)?.[1] ?? 'image/jpeg', data } })
   })
-  const res = await fetch(`${GEMINI}/models/${model}:generateContent?key=${encodeURIComponent(key)}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ role: 'user', parts }],
-      generationConfig: { responseMimeType: 'application/json', responseSchema: SCHEMA, temperature: 0.1 },
-    }),
+  const gc = generationConfig(style)
+  return withTimeout(timeoutMs, async (signal) => {
+    const res = await fetch(`${GEMINI}/models/${model}:generateContent`, {
+      method: 'POST',
+      signal,
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+      body: JSON.stringify({ contents: [{ role: 'user', parts }], ...(gc ? { generationConfig: gc } : {}) }),
+    })
+    if (!res.ok) throw await geminiError(res)
+    const data = await res.json()
+    const text: string = (data.candidates?.[0]?.content?.parts ?? []).map((p: { text?: string; thought?: boolean }) => (p.thought ? '' : p.text ?? '')).join('')
+    if (!text) {
+      const reason = data.promptFeedback?.blockReason || data.candidates?.[0]?.finishReason
+      throw new AIError(`The AI returned no text${reason ? ` (${reason})` : ''}. Try clearer photos.`, 'parse')
+    }
+    return parseJson(text)
   })
-  if (!res.ok) throw await geminiError(res)
-  const data = await res.json()
-  const text: string = (data.candidates?.[0]?.content?.parts ?? []).map((p: { text?: string; thought?: boolean }) => (p.thought ? '' : p.text ?? '')).join('')
-  if (!text) {
-    const reason = data.promptFeedback?.blockReason || data.candidates?.[0]?.finishReason
-    throw new AIError(`The AI returned no text${reason ? ` (${reason})` : ''}. Try clearer photos.`, 'parse')
-  }
-  return parseJson(text)
 }
 
 /* ------------------------------------------------------------------ */
@@ -177,6 +222,7 @@ export async function groqCall(key: string, model: string, images: string[]): Pr
   if (images.length > 5) throw new AIError('Groq can read at most 5 photos per paper.', 'other')
   const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
+    signal: AbortSignal.timeout(90_000),
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
     body: JSON.stringify({
       model,
@@ -204,13 +250,17 @@ export async function groqCall(key: string, model: string, images: string[]): Pr
 /*  Orchestration                                                      */
 /* ------------------------------------------------------------------ */
 
-export interface AIConfig { geminiKey?: string; groqKey?: string; geminiModel?: string; groqModel?: string }
+export interface AIConfig { geminiKey?: string; groqKey?: string; geminiModel?: string; groqModel?: string; timeBudgetMs?: number }
 
 /** Try Gemini models (best free first), then Groq. Returns the raw JSON the model produced. */
 export async function extractRaw(images: string[], s: AIConfig, onProgress: Progress = () => {}): Promise<{ raw: unknown; provider: string }> {
   if (!images.length) throw new AIError('Add at least one photo of the paper first.', 'other')
   if (!s.geminiKey && !s.groqKey) throw new AIError('No AI key is configured.', 'key')
-  const errors: string[] = []
+  const errors: { model: string; kind: string; msg: string }[] = []
+
+  const started = Date.now()
+  const budget = s.timeBudgetMs ?? 230_000
+  const timeLeft = () => budget - (Date.now() - started)
 
   if (s.geminiKey) {
     let models: string[] = []
@@ -220,15 +270,29 @@ export async function extractRaw(images: string[], s: AIConfig, onProgress: Prog
     } catch (e) {
       if (e instanceof AIError && e.kind === 'key') throw e
     }
-    const order = [...new Set([...(s.geminiModel && s.geminiModel !== 'auto' ? [s.geminiModel] : []), ...models.slice(0, 5), ...FALLBACK_GEMINI_MODELS])]
-    for (const model of order.slice(0, 6)) {
-      try {
-        onProgress(`Reading handwriting with ${prettyModel(model)}…`)
-        return { raw: await geminiCall(s.geminiKey, model, images), provider: prettyModel(model) }
-      } catch (e) {
-        if (e instanceof AIError && e.kind === 'key') throw e
-        if (e instanceof TypeError) throw new AIError('No internet connection. Check your network and try again.', 'network')
-        errors.push(`${model}: ${(e as Error).message}`)
+    const queue = [...new Set([...(s.geminiModel && s.geminiModel !== 'auto' ? [s.geminiModel] : []), ...models.slice(0, 4), ...FALLBACK_GEMINI_MODELS])]
+    const tried = new Set<string>()
+    let attempts = 0
+    while (queue.length && attempts < 8 && timeLeft() > 20_000) {
+      const model = queue.shift()!
+      if (tried.has(model)) continue
+      tried.add(model)
+      // Try request styles from newest to simplest until this model accepts one.
+      for (let style = 0; style < 4 && timeLeft() > 20_000; style++) {
+        attempts++
+        try {
+          onProgress(`Reading handwriting with ${prettyModel(model)}…`)
+          const raw = await geminiCall(s.geminiKey, model, images, style, Math.min(100_000, timeLeft() - 5_000))
+          return { raw, provider: prettyModel(model) }
+        } catch (e) {
+          if (e instanceof AIError && e.kind === 'key') throw e
+          if (e instanceof TypeError) throw new AIError('No internet connection. Check your network and try again.', 'network')
+          const err = e as AIError
+          errors.push({ model, kind: err.kind ?? 'other', msg: err.message })
+          if (err.kind === 'request' || err.kind === 'parse') continue // try a simpler request style
+          if (err.kind === 'model' && err.suggested && !tried.has(err.suggested)) queue.unshift(err.suggested)
+          break // move on to the next model
+        }
       }
     }
   }
@@ -239,18 +303,17 @@ export async function extractRaw(images: string[], s: AIConfig, onProgress: Prog
       return { raw: await groqCall(s.groqKey, s.groqModel || 'meta-llama/llama-4-scout-17b-16e-instruct', images), provider: 'Groq' }
     } catch (e) {
       if (e instanceof TypeError) throw new AIError('No internet connection. Check your network and try again.', 'network')
-      errors.push(`groq: ${(e as Error).message}`)
+      errors.push({ model: 'groq', kind: (e as AIError).kind ?? 'other', msg: (e as Error).message })
     }
   }
 
   console.warn('AI attempts failed', errors)
-  const quota = errors.some((x) => /limit/i.test(x))
-  throw new AIError(
-    quota
-      ? 'The free AI limit is used up for now. Please wait a minute (or until tomorrow) and try again.'
-      : `The AI could not read this paper. ${errors[errors.length - 1]?.split(': ').slice(1).join(': ') ?? ''}`,
-    quota ? 'quota' : 'other',
-  )
+  // Report the most useful failure, not just the last one.
+  const pick = (k: string) => errors.find((x) => x.kind === k)
+  const best = pick('quota') ?? pick('timeout') ?? pick('parse') ?? pick('request') ?? pick('other') ?? errors[errors.length - 1]
+  if (best?.kind === 'quota') throw new AIError('The free AI limit is used up for now. Please wait a minute (or until tomorrow) and try again.', 'quota')
+  if (best?.kind === 'timeout') throw new AIError('The AI is taking too long right now. Please try again in a minute, or with fewer pages.', 'timeout')
+  throw new AIError(`The AI could not read this paper. ${best ? `(${best.model}) ${best.msg}` : ''}`.trim(), (best?.kind as AIErrorKind) ?? 'other')
 }
 
 export function prettyModel(m: string) {
@@ -270,4 +333,3 @@ export function parseJson(text: string): unknown {
   }
   throw new AIError('The AI reply was not in the expected format. Please try again.', 'parse')
 }
-
