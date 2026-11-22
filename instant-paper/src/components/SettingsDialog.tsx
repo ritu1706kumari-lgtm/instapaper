@@ -113,6 +113,11 @@ export function SettingsDialog() {
             </>
           ) : (
             <>
+              {server.reason && location.hostname !== 'localhost' && (
+                <div role="note" className="rounded-2xl bg-amber-50 p-4 text-sm text-amber-900 ring-1 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-100 dark:ring-amber-500/30">
+                  <b>School AI not found.</b> {server.reason} <span className="block pt-1 text-xs opacity-80">Teachers can still add their own free key below.</span>
+                </div>
+              )}
           <ol className="list-decimal space-y-1 rounded-2xl bg-marigold-soft/70 p-4 pl-8 text-sm text-ink-900 dark:bg-marigold/10 dark:text-ink-50">
             <li>Open <a className="font-semibold underline underline-offset-2" href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer">Google AI Studio <ExternalLink size={12} className="inline" aria-hidden /><span className="sr-only">(opens in new tab)</span></a> and sign in with any Gmail account.</li>
             <li>Click <b>“Create API key”</b>. No credit card is needed.</li>
