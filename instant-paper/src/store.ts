@@ -4,6 +4,7 @@ import type { MatchPair, Paper, PaperHeader, Question, Section, Settings } from 
 import { blankPaper, samplePaper } from './lib/sample'
 import { checkServerAI, extractPaper, type ServerAIStatus } from './lib/ai'
 import { uid } from './lib/id'
+import { defaultBook, enforcePattern, patternTotal, fmtMark } from './lib/pattern'
 
 export type View = 'photos' | 'template' | 'editor'
 
@@ -26,7 +27,7 @@ interface State {
   toast: (kind: Toast['kind'], text: string) => void
   dismissToast: (id: string) => void
 
-  addPaper: (p?: Paper) => string
+  addPaper: (p?: Paper, mode?: 'handwritten' | 'book') => string
   removePaper: (id: string) => void
   duplicatePaper: (id: string) => void
   setActive: (id: string) => void
@@ -94,9 +95,13 @@ export const useStore = create<State>((set, get) => ({
   },
   dismissToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
 
-  addPaper: (p) => {
+  addPaper: (p, mode = 'handwritten') => {
     const { settings } = get()
-    const paper = p ?? blankPaper(settings.schoolName, settings.schoolLogo)
+    const paper: Paper = p ?? {
+      ...blankPaper(settings.schoolName, settings.schoolLogo),
+      mode,
+      ...(mode === 'book' ? { book: defaultBook(), name: 'Paper from book' } : {}),
+    }
     set((s) => ({ papers: [...s.papers, paper], activeId: paper.id, views: { ...s.views, [paper.id]: p ? 'editor' : 'photos' } }))
     return paper.id
   },
@@ -139,7 +144,29 @@ export const useStore = create<State>((set, get) => ({
     const ctrl = new AbortController()
     controllers.set(id, ctrl)
     try {
-      const res = await extractPaper(paper.photos.map((p) => p.dataUrl), settings, get().serverAI, setProgress, ctrl.signal)
+      const isBook = paper.mode === 'book'
+      const book = isBook ? (paper.book ?? defaultBook()) : null
+      const req = book ? {
+        pattern: book.pattern.map(({ type, count, marks }) => ({ type, count, marks })),
+        difficulty: book.difficulty, source: book.source, language: book.language,
+        className: paper.header.className, subject: paper.header.subject, chapters: book.chapters,
+        variation: Math.floor(Math.random() * 1_000_000),
+      } : null
+      const res = await extractPaper(paper.photos.map((p) => p.dataUrl), settings, get().serverAI, setProgress, ctrl.signal, req)
+      let shortBy: string[] = []
+      if (book) {
+        const hindi = book.language === 'hi' || (book.language === 'same' && /[\u0900-\u097F]/.test(JSON.stringify(res.sections).slice(0, 3000)))
+        const fixed = enforcePattern(res.sections, book.pattern, hindi)
+        res.sections = fixed.sections
+        shortBy = fixed.short
+        // Keep what the teacher typed for the heading; fill the rest from the pattern.
+        res.header = {
+          ...paper.header,
+          maxMarks: fmtMark(patternTotal(book.pattern)),
+          className: paper.header.className || res.header.className,
+          subject: paper.header.subject || res.header.subject,
+        }
+      }
       get().updatePaper(id, (p) => ({
         ...p,
         status: 'done',
@@ -149,11 +176,12 @@ export const useStore = create<State>((set, get) => ({
           logo: p.header.logo ?? settings.schoolLogo,
         },
         sections: res.sections,
-        name: [res.header.className && `Class ${res.header.className}`, res.header.subject].filter(Boolean).join(' · ') || p.name,
+        name: (p.name === 'Untitled paper' || p.status !== 'done' || isBook ? [res.header.className && `Class ${res.header.className}`, res.header.subject].filter(Boolean).join(' · ') : '') || p.name,
       }))
       set((s) => ({ views: { ...s.views, [id]: 'editor' } }))
       const diagrams = res.sections.flatMap((s) => s.questions).filter((q) => q.needsDiagram).length
-      get().toast('success', `Paper ready in ${res.seconds}s (read by ${res.provider}).${diagrams ? ` ${diagrams} question(s) need a diagram — look for the yellow badges.` : ' Check it once and print!'}`)
+      if (shortBy.length) get().toast('info', `The chapter pages didn’t have enough material for: ${shortBy.join(', ')}. Add more pages, or type the rest in the editor.`)
+      get().toast('success', `Paper ready in ${res.seconds}s (${isBook ? 'written' : 'read'} by ${res.provider}).${diagrams ? ` ${diagrams} question(s) need a diagram — look for the yellow badges.` : ' Check it once and print!'}`)
       return true
     } catch (e) {
       const msg = (e as Error).message

@@ -6,6 +6,7 @@ import { useStore } from '../store'
 import { TEMPLATES } from '../lib/templates'
 import { mathDemoSections, samplePaper } from '../lib/sample'
 import { PaperView } from './PaperView'
+import { BookPattern } from './BookPattern'
 import { ScaledPaper } from './ScaledPaper'
 import { Button } from './ui'
 
@@ -17,6 +18,7 @@ export function TemplateStep({ paper }: { paper: Paper }) {
   const progress = useStore((s) => s.progress[paper.id])
   const school = useStore((s) => s.settings.schoolName)
   const generating = paper.status === 'generating'
+  const isBook = paper.mode === 'book'
 
   const demo = useMemo(() => {
     if (paper.sections.length) return paper
@@ -28,15 +30,22 @@ export function TemplateStep({ paper }: { paper: Paper }) {
     <div className="mx-auto max-w-6xl space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="font-display text-3xl font-semibold tracking-tight sm:text-4xl">Pick a template</h1>
-          <p className="mt-2 max-w-2xl text-ink-600 dark:text-ink-300">The AI fills the heading, class, subject, time, marks and every section into the layout you choose. You can switch templates any time later.</p>
+          <h1 className="font-display text-3xl font-semibold tracking-tight sm:text-4xl">{isBook ? 'Choose the question pattern' : 'Pick a template'}</h1>
+          <p className="mt-2 max-w-2xl text-ink-600 dark:text-ink-300">
+            {isBook
+              ? 'Tell the AI what kind of questions you want and how many. It writes the paper from your chapter pages in exactly this pattern.'
+              : 'The AI fills the heading, class, subject, time, marks and every section into the layout you choose. You can switch templates any time later.'}
+          </p>
         </div>
       </div>
 
+      {isBook && !generating && <BookPattern paper={paper} />}
+      {isBook && !generating && <h2 className="pt-2 font-display text-xl font-semibold">Layout</h2>}
+
       {generating ? (
-        <Scanning paper={paper} message={progress ?? 'Starting…'} onCancel={() => cancel(paper.id)} />
+        <Scanning paper={paper} message={progress ?? 'Starting…'} onCancel={() => cancel(paper.id)} book={isBook} />
       ) : (
-        <div role="radiogroup" aria-label="Templates" className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+        <div role="radiogroup" aria-label="Templates" className={`grid gap-5 sm:grid-cols-2 ${isBook ? 'lg:grid-cols-5' : 'lg:grid-cols-3'}`}>
           {TEMPLATES.map((t, i) => {
             const sel = paper.templateId === t.id
             return (
@@ -90,7 +99,7 @@ export function TemplateStep({ paper }: { paper: Paper }) {
             icon={generating ? <Loader2 size={18} className="animate-spin" /> : <Sparkles size={18} />}
             onClick={() => generate(paper.id)}
           >
-            {generating ? 'Reading…' : paper.sections.length ? 'Read photos again with AI' : 'Create paper with AI'}
+            {generating ? (isBook ? 'Writing…' : 'Reading…') : isBook ? (paper.sections.length ? 'New questions with AI' : 'Create paper from book') : paper.sections.length ? 'Read photos again with AI' : 'Create paper with AI'}
           </Button>
         </div>
       </div>
@@ -98,7 +107,7 @@ export function TemplateStep({ paper }: { paper: Paper }) {
   )
 }
 
-function Scanning({ paper, message, onCancel }: { paper: Paper; message: string; onCancel: () => void }) {
+function Scanning({ paper, message, onCancel, book }: { paper: Paper; message: string; onCancel: () => void; book?: boolean }) {
   const [secs, setSecs] = useState(0)
   useEffect(() => { const t = setInterval(() => setSecs((x) => x + 1), 1000); return () => clearInterval(t) }, [])
   return (
@@ -117,10 +126,10 @@ function Scanning({ paper, message, onCancel }: { paper: Paper; message: string;
         </div>
       </div>
       <div>
-        <p className="font-display text-3xl font-semibold">Reading the handwriting…</p>
+        <p className="font-display text-3xl font-semibold">{book ? 'Writing your paper…' : 'Reading the handwriting…'}</p>
         <p className="mt-3 text-ink-600 dark:text-ink-300" role="status" aria-live="polite">{message}</p>
         <ul className="mt-6 space-y-2 text-sm text-ink-600 dark:text-ink-300">
-          {['Finding the header, class & subject', 'Detecting sections and marks', 'Typing every question, blank and option', 'Formatting maths & Hindi text'].map((t, i) => (
+          {(book ? ['Reading the chapter pages', 'Picking questions from the exercises', 'Following your pattern & marks', 'Formatting maths & Hindi text'] : ['Finding the header, class & subject', 'Detecting sections and marks', 'Typing every question, blank and option', 'Formatting maths & Hindi text']).map((t, i) => (
             <motion.li key={t} initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.6 + i * 1.4 }} className="flex items-center gap-2">
               <motion.span animate={{ scale: [1, 1.3, 1] }} transition={{ repeat: Infinity, duration: 1.6, delay: i * 0.3 }} className="h-2 w-2 rounded-full bg-ink-500" aria-hidden />
               {t}

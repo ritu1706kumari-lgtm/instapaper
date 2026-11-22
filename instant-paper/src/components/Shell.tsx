@@ -1,5 +1,6 @@
+import { useEffect, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'motion/react'
-import { Camera, Check, Copy, FileText, LayoutTemplate, Loader2, Moon, PenLine, Plus, Settings, Sparkles, Sun, X, AlertTriangle, Monitor } from 'lucide-react'
+import { BookOpen, Camera, Check, Copy, FileText, LayoutTemplate, Loader2, Moon, PenLine, Plus, Settings, Sparkles, Sun, X, AlertTriangle, Monitor } from 'lucide-react'
 import { useAIReady, useStore, type View } from '../store'
 import { Button } from './ui'
 
@@ -31,6 +32,49 @@ export function TopBar() {
         </Button>
       </div>
     </header>
+  )
+}
+
+function NewPaperMenu({ onPick }: { onPick: (m: 'handwritten' | 'book') => void }) {
+  const [open, setOpen] = useState(false)
+  const [pos, setPos] = useState({ left: 16, top: 120 })
+  const ref = useRef<HTMLDivElement>(null)
+  const btn = useRef<HTMLButtonElement>(null)
+  const toggle = () => {
+    const r = btn.current?.getBoundingClientRect()
+    if (r) setPos({ left: Math.max(16, Math.min(r.left, window.innerWidth - 346)), top: r.bottom + 6 })
+    setOpen(!open)
+  }
+  useEffect(() => {
+    if (!open) return
+    const close = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false) }
+    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', close); document.addEventListener('keydown', esc)
+    return () => { document.removeEventListener('mousedown', close); document.removeEventListener('keydown', esc) }
+  }, [open])
+  const pick = (m: 'handwritten' | 'book') => { setOpen(false); onPick(m) }
+  return (
+    <div ref={ref} className="relative shrink-0">
+      <Button ref={btn} variant="ghost" size="sm" className="h-10" icon={<Plus size={16} />} aria-haspopup="menu" aria-expanded={open} onClick={toggle}>New paper</Button>
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            role="menu" style={pos} initial={{ opacity: 0, y: -6, scale: 0.97 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: -6, scale: 0.97 }}
+            className="fixed z-40 w-[min(330px,calc(100vw-32px))] rounded-2xl bg-white p-2 shadow-2xl ring-1 ring-ink-100 dark:bg-[#1b1e2b] dark:ring-white/10"
+          >
+            {([
+              ['handwritten', PenLine, 'From a handwritten paper', 'Photos of a paper a teacher wrote — AI types it out'],
+              ['book', BookOpen, 'From book chapters', 'Photos of chapter / exercise pages — AI makes the paper in your pattern'],
+            ] as const).map(([m, Icon, t, d], i) => (
+              <button key={m} role="menuitem" autoFocus={i === 0} onClick={() => pick(m)} className="flex w-full items-start gap-3 rounded-xl p-3 text-left transition hover:bg-ink-50 focus-visible:bg-ink-50 dark:hover:bg-white/5">
+                <span className={`grid h-9 w-9 shrink-0 place-items-center rounded-xl ${m === 'book' ? 'bg-marigold-soft text-marigold' : 'bg-ink-100 text-ink-700 dark:bg-white/10 dark:text-ink-100'}`}><Icon size={18} aria-hidden /></span>
+                <span><span className="block text-sm font-semibold">{t}</span><span className="block text-xs text-ink-500 dark:text-ink-300">{d}</span></span>
+              </button>
+            ))}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
   )
 }
 
@@ -90,7 +134,7 @@ export function PaperTabs() {
             )
           })}
         </AnimatePresence>
-        <Button variant="ghost" size="sm" className="h-10 shrink-0" icon={<Plus size={16} />} onClick={() => addPaper()}>New paper</Button>
+        <NewPaperMenu onPick={(m) => addPaper(undefined, m)} />
       </div>
       <AnimatePresence>
         {pending.length > 1 && (
@@ -111,7 +155,7 @@ const STEPS: { id: View; label: string; icon: typeof Camera }[] = [
   { id: 'editor', label: 'Edit & print', icon: PenLine },
 ]
 
-export function Stepper({ paperId, view }: { paperId: string; view: View }) {
+export function Stepper({ paperId, view, book }: { paperId: string; view: View; book?: boolean }) {
   const setView = useStore((s) => s.setView)
   const idx = STEPS.findIndex((s) => s.id === view)
   return (
@@ -132,7 +176,7 @@ export function Stepper({ paperId, view }: { paperId: string; view: View }) {
                   {done ? <Check size={12} aria-hidden /> : i + 1}
                 </span>
                 <Icon size={15} className="relative hidden sm:block" aria-hidden />
-                <span className={`relative whitespace-nowrap ${active ? '' : 'hidden sm:inline'}`}>{s.label}</span>
+                <span className={`relative whitespace-nowrap ${active ? '' : 'hidden sm:inline'}`}>{book && s.id === 'template' ? 'Pattern & AI' : book && s.id === 'photos' ? 'Book pages' : s.label}</span>
                 {done && <span className="sr-only">(completed)</span>}
               </button>
               {i < STEPS.length - 1 && <span className={`h-px w-4 sm:w-8 ${i < idx ? 'bg-emerald-400' : 'bg-ink-200 dark:bg-white/10'}`} aria-hidden />}

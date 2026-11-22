@@ -67,6 +67,9 @@ export interface Paper {
   setLabel?: string
   /** Set A/B/C shuffle options for this paper. */
   sets?: SetOptions
+  /** 'handwritten' = type out a teacher's paper; 'book' = create a paper from textbook pages. */
+  mode?: 'handwritten' | 'book'
+  book?: BookSettings
   updatedAt: number
 }
 
@@ -80,6 +83,16 @@ export interface Settings {
   schoolName: string
   schoolLogo?: string
   theme: 'light' | 'dark' | 'system'
+}
+
+export type PatternType = 'mcq' | 'fill' | 'truefalse' | 'match' | 'oneword' | 'short' | 'long'
+export interface PatternRow { id: string; type: PatternType; count: number; marks: number }
+export interface BookSettings {
+  pattern: PatternRow[]
+  difficulty: 'easy' | 'mixed' | 'hard'
+  source: 'book' | 'mixed' | 'new'
+  language: 'same' | 'en' | 'hi'
+  chapters: string
 }
 
 export interface SetOptions {

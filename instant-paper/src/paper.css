@@ -125,6 +125,11 @@
 }
 .diagram-badge:hover, .diagram-badge:focus-visible { background: #fde68a; outline: 2px solid #ca8a04; }
 
+/* Empty marks: invisible on the page, appears only when you point at the heading (never printed). */
+.add-marks { opacity: 0; transition: opacity .15s; font-weight: 400; font-size: 0.85em; }
+.p-sec-head:hover .add-marks, .add-marks:focus-within { opacity: 1; }
+.add-marks .rt-placeholder { color: #6b7280; }
+
 /* ---------- Printing ---------- */
 .print-root { display: none; }
 
@@ -138,4 +143,5 @@
   .print-root .paper { width: auto; min-height: 0; padding: 0; box-shadow: none !important; zoom: 1 !important; }
   .print-root .paper + .paper { break-before: page; page-break-before: always; }
   .no-print { display: none !important; }
+  .rt-placeholder, .add-marks { display: none !important; }
 }

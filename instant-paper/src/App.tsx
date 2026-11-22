@@ -68,7 +68,7 @@ export default function App() {
           <>
             <PaperTabs />
             <div className="mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-3 px-4 pb-2 pt-4 sm:px-6">
-              <Stepper paperId={paper.id} view={view} />
+              <Stepper paperId={paper.id} view={view} book={paper.mode === 'book'} />
             </div>
             <main id="main" tabIndex={-1} className="px-4 pb-24 pt-4 outline-none sm:px-6">
               <AnimatePresence mode="wait">

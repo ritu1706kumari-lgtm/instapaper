@@ -1,6 +1,6 @@
 import type { PaperHeader, Section, SectionType, Settings } from '../types'
 import { uid } from './id'
-import { AIError, extractRaw, validSetup, type GeminiSetup, type Progress } from './aiCore'
+import { AIError, extractRaw, validSetup, type BookRequest, type GeminiSetup, type Progress } from './aiCore'
 
 export { AIError, listGeminiModels, prettyModel } from './aiCore'
 
@@ -51,10 +51,10 @@ async function fitImages(images: string[]): Promise<string[]> {
   return out
 }
 
-async function extractViaServer(images: string[], code: string, onProgress: Progress, signal?: AbortSignal) {
+async function extractViaServer(images: string[], code: string, onProgress: Progress, signal?: AbortSignal, book?: BookRequest | null) {
   onProgress('Uploading photos…')
-  const body = JSON.stringify({ images: await fitImages(images), code, hint: loadHint() })
-  onProgress('Reading handwriting with the school AI…')
+  const body = JSON.stringify({ images: await fitImages(images), code, hint: loadHint(), ...(book ? { book } : {}) })
+  onProgress(book ? 'Writing your paper from the chapter…' : 'Reading handwriting with the school AI…')
   let res: Response
   try {
     const timeout = AbortSignal.timeout(295_000)
@@ -79,7 +79,7 @@ async function extractViaServer(images: string[], code: string, onProgress: Prog
 /*  Main entry                                                         */
 /* ------------------------------------------------------------------ */
 
-export async function extractPaper(images: string[], s: Settings, server: ServerAIStatus, onProgress: Progress = () => {}, signal?: AbortSignal): Promise<ExtractResult> {
+export async function extractPaper(images: string[], s: Settings, server: ServerAIStatus, onProgress: Progress = () => {}, signal?: AbortSignal, book?: BookRequest | null): Promise<ExtractResult> {
   if (!images.length) throw new AIError('Add at least one photo of the paper first.', 'other')
   // A personal key (Settings → Advanced) always wins; otherwise use the school's shared AI.
   const personal = !!(s.geminiKey || s.groqKey)
@@ -90,10 +90,10 @@ export async function extractPaper(images: string[], s: Settings, server: Server
   let res: { raw: unknown; provider: string; ms?: number }
   if (personal) {
     const cancelled = new Promise<never>((_, rej) => signal?.addEventListener('abort', () => rej(new AIError('Cancelled.', 'other'))))
-    const r = await Promise.race([extractRaw(images, { ...s, hint: loadHint() }, onProgress), cancelled])
+    const r = await Promise.race([extractRaw(images, { ...s, hint: loadHint() }, onProgress, book), cancelled])
     saveHint(r.setup)
     res = r
-  } else if (server.available) res = await extractViaServer(images, s.accessCode ?? '', onProgress, signal)
+  } else if (server.available) res = await extractViaServer(images, s.accessCode ?? '', onProgress, signal, book)
   else throw new AIError('AI is not set up yet. Ask the administrator to add the school AI key, or add your own key in Settings.', 'key')
   return { ...normalize(res.raw), provider: res.provider, seconds: Math.max(1, Math.round((Date.now() - t0) / 1000)) }
 }
@@ -126,9 +126,21 @@ export function normalize(raw: any): { header: PaperHeader; sections: Section[] 
       }))
       .filter((q: any) => q.text || q.options)
     const pairs = Array.isArray(s?.pairs) && s.pairs.length ? s.pairs.map((p: any) => ({ id: uid(), left: str(p?.left), right: str(p?.right) })) : undefined
+    const title = str(s?.title).replace(/^(que|q|question|प्रश्न)\.?\s*\d+[.:)]?\s*/i, '')
+    // A one-line task ("Write an essay on cow") must not also appear as its own sub-question.
+    const key = (x: string) => x.toLowerCase().replace(/[^\p{L}\p{M}\p{N}]+/gu, '')
+    const tk = key(title)
+    const dupes = (q: any) => {
+      const qk = key(q.text)
+      return !!qk && !!tk && !q.options && (qk === tk || (qk.length > 6 && tk.includes(qk) && questions.length === 1) || (tk.length > 6 && qk.includes(tk)))
+    }
+    if (questions.length && dupes(questions[0])) questions.shift()
+    let finalTitle = title
+    // Only one plain question and no instruction: that question IS the main question.
+    if (!finalTitle && questions.length === 1 && !questions[0].options && !pairs && str(s?.number)) { finalTitle = questions[0].text; questions.length = 0 }
     return {
       id: uid(),
-      title: str(s?.title).replace(/^(que|q|question|प्रश्न)\.?\s*\d+[.:)]?\s*/i, ''),
+      title: finalTitle,
       marks: str(s?.marks).replace(/^\(|\)$/g, ''),
       type: pairs && type !== 'match' && !questions.length ? 'match' : type,
       questions,

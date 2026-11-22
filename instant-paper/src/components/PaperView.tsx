@@ -105,7 +105,6 @@ interface SectionProps {
 
 function SectionBlock({ s, i, t, editable, start, onSection, onQuestion, onPair, onDiagramClick }: SectionProps) {
   const label = sectionLabel(t, i)
-  const marks = s.marks ? `(${s.marks})` : ''
   const E = (value: string, onChange: (v: string) => void, lbl: string, placeholder?: string, cls?: string) => (
     <Editable value={value} onChange={onChange} label={lbl} placeholder={placeholder} editable={editable} className={cls} />
   )
@@ -118,7 +117,8 @@ function SectionBlock({ s, i, t, editable, start, onSection, onQuestion, onPair,
           <div className="p-sec-name">{label}</div>
           <div className="p-sec-row">
             <span className="p-sec-title">{E(s.title, (v) => onSection({ title: v }), `section ${i + 1} title`, 'Section instruction')}</span>
-            {(s.marks || editable) && <span className="p-marks">({E(s.marks, (v) => onSection({ marks: v }), `section ${i + 1} marks`, 'marks')})</span>}
+            {s.marks ? <span className="p-marks">({E(s.marks, (v) => onSection({ marks: v }), `section ${i + 1} marks`)})</span>
+              : editable && <span className="p-marks add-marks no-print">{E('', (v) => onSection({ marks: v }), `section ${i + 1} marks`, '+ marks')}</span>}
           </div>
         </div>
       ) : (
@@ -126,7 +126,8 @@ function SectionBlock({ s, i, t, editable, start, onSection, onQuestion, onPair,
           <span className="p-sec-title">
             <span className="p-sec-num">{label}</span> {E(s.title, (v) => onSection({ title: v }), `question ${i + 1} title`, 'Instruction')}
           </span>
-          {(marks || editable) && <span className="p-marks">({E(s.marks, (v) => onSection({ marks: v }), `question ${i + 1} marks`, 'marks')})</span>}
+          {s.marks ? <span className="p-marks">({E(s.marks, (v) => onSection({ marks: v }), `question ${i + 1} marks`)})</span>
+            : editable && <span className="p-marks add-marks no-print">{E('', (v) => onSection({ marks: v }), `question ${i + 1} marks`, '+ marks')}</span>}
         </div>
       )}
 

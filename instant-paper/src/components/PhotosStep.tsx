@@ -16,6 +16,7 @@ export function PhotosStep({ paper }: { paper: Paper }) {
   const server = useStore((s) => s.serverAI)
   const openSettings = useStore((s) => s.openSettings)
   const [drag, setDrag] = useState(false)
+  const isBook = paper.mode === 'book'
   const [loading, setLoading] = useState(0)
   const [crop, setCrop] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -55,8 +56,12 @@ export function PhotosStep({ paper }: { paper: Paper }) {
   return (
     <div className="mx-auto max-w-5xl space-y-6">
       <div>
-        <h1 className="font-display text-3xl font-semibold tracking-tight sm:text-4xl">Add photos of the handwritten paper</h1>
-        <p className="mt-2 max-w-2xl text-ink-600 dark:text-ink-300">Take a clear, well-lit photo of each page — straight from above. Add pages in order; you can reorder or rotate them below.</p>
+        <h1 className="font-display text-3xl font-semibold tracking-tight sm:text-4xl">{isBook ? 'Add photos of the chapter pages' : 'Add photos of the handwritten paper'}</h1>
+        <p className="mt-2 max-w-2xl text-ink-600 dark:text-ink-300">
+          {isBook
+            ? 'Snap the chapter’s exercise pages — and the lesson pages too if you want questions from the content. Up to about 10 pages; hold the phone straight above the book.'
+            : 'Take a clear, well-lit photo of each page — straight from above. Add pages in order; you can reorder or rotate them below.'}
+        </p>
       </div>
 
       {!hasKey && server.checked && (
@@ -120,9 +125,9 @@ export function PhotosStep({ paper }: { paper: Paper }) {
       )}
 
       <div className="flex flex-col-reverse items-stretch justify-between gap-3 border-t border-ink-100 pt-5 sm:flex-row sm:items-center dark:border-white/10">
-        <Button variant="ghost" icon={<PenLine size={16} />} onClick={() => setView(paper.id, 'editor')}>Skip — I’ll type the questions myself</Button>
+        {!isBook ? <Button variant="ghost" icon={<PenLine size={16} />} onClick={() => setView(paper.id, 'editor')}>Skip — I’ll type the questions myself</Button> : <span />}
         <Button variant="primary" size="lg" disabled={!paper.photos.length} onClick={() => setView(paper.id, 'template')}>
-          Choose template <ArrowRight size={18} aria-hidden />
+          {isBook ? 'Choose pattern' : 'Choose template'} <ArrowRight size={18} aria-hidden />
         </Button>
       </div>
 
