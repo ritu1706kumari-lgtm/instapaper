@@ -9,7 +9,7 @@
  */
 import { AIError, extractRaw } from '../src/lib/aiCore.js'
 
-export const maxDuration = 120
+export const maxDuration = 290
 
 const LIMIT_PER_HOUR = Number(process.env.RATE_LIMIT_PER_HOUR || 60)
 const hits = new Map<string, number[]>()
@@ -63,6 +63,7 @@ export async function POST(req: Request) {
       groqKey: process.env.GROQ_API_KEY,
       geminiModel: process.env.GEMINI_MODEL || 'auto',
       groqModel: process.env.GROQ_MODEL,
+      timeBudgetMs: 250_000,
     })
     return json(res)
   } catch (e) {
