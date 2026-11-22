@@ -7,7 +7,7 @@
  *   ACCESS_CODE      (optional)  a school code users must type once, to keep strangers out
  *   GEMINI_MODEL     (optional)  force a model, e.g. gemini-3.5-flash (default: automatic)
  */
-import { AIError, extractRaw } from '../src/lib/aiCore.js'
+import { AIError, extractRaw, validSetup } from '../src/lib/aiCore.js'
 
 export const maxDuration = 290
 
@@ -46,7 +46,7 @@ export async function POST(req: Request) {
   const ip = (req.headers.get('x-forwarded-for') ?? 'unknown').split(',')[0].trim()
   if (rateLimited(ip)) return json({ error: 'Too many papers from this device in the last hour. Please wait a little.', kind: 'quota' }, 429)
 
-  let body: { images?: unknown; code?: unknown }
+  let body: { images?: unknown; code?: unknown; hint?: unknown }
   try { body = await req.json() } catch { return json({ error: 'Bad request.', kind: 'other' }, 400) }
 
   const code = process.env.ACCESS_CODE
@@ -64,6 +64,7 @@ export async function POST(req: Request) {
       geminiModel: process.env.GEMINI_MODEL || 'auto',
       groqModel: process.env.GROQ_MODEL,
       timeBudgetMs: 250_000,
+      hint: validSetup(body.hint),
     })
     return json(res)
   } catch (e) {
