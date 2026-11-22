@@ -7,6 +7,8 @@ import { TEMPLATES } from '../lib/templates'
 import { mathDemoSections, samplePaper } from '../lib/sample'
 import { PaperView } from './PaperView'
 import { BookPattern } from './BookPattern'
+import { ExtraInstructions } from './ExtraInstructions'
+import { Shuffle, FilePlus2, Blend } from 'lucide-react'
 import { ScaledPaper } from './ScaledPaper'
 import { Button } from './ui'
 
@@ -19,6 +21,7 @@ export function TemplateStep({ paper }: { paper: Paper }) {
   const school = useStore((s) => s.settings.schoolName)
   const generating = paper.status === 'generating'
   const isBook = paper.mode === 'book'
+  const isPrev = paper.mode === 'previous'
 
   const demo = useMemo(() => {
     if (paper.sections.length) return paper
@@ -30,20 +33,25 @@ export function TemplateStep({ paper }: { paper: Paper }) {
     <div className="mx-auto max-w-6xl space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="font-display text-3xl font-semibold tracking-tight sm:text-4xl">{isBook ? 'Choose the question pattern' : 'Pick a template'}</h1>
+          <p className="text-sm font-semibold uppercase tracking-wider text-marigold">Step 2 of 3</p>
+          <h1 className="font-display text-3xl font-semibold tracking-tight sm:text-4xl">{isBook ? 'Choose the question pattern' : isPrev ? 'What should we do with the old paper?' : 'Pick a template'}</h1>
           <p className="mt-2 max-w-2xl text-ink-600 dark:text-ink-300">
             {isBook
               ? 'Tell the AI what kind of questions you want and how many. It writes the paper from your chapter pages in exactly this pattern.'
-              : 'The AI fills the heading, class, subject, time, marks and every section into the layout you choose. You can switch templates any time later.'}
+              : isPrev
+                ? 'Pick one option, choose a layout, and press the yellow button.'
+                : 'The AI fills the heading, class, subject, time, marks and every section into the layout you choose. You can switch templates any time later.'}
           </p>
         </div>
       </div>
 
       {isBook && !generating && <BookPattern paper={paper} />}
-      {isBook && !generating && <h2 className="pt-2 font-display text-xl font-semibold">Layout</h2>}
+      {isPrev && !generating && <PreviousOptions paper={paper} />}
+      {!generating && <ExtraInstructions paper={paper} />}
+      {!generating && <h2 className="pt-2 font-display text-xl font-semibold">{isBook ? '4. ' : ''}Layout</h2>}
 
       {generating ? (
-        <Scanning paper={paper} message={progress ?? 'Starting…'} onCancel={() => cancel(paper.id)} book={isBook} />
+        <Scanning paper={paper} message={progress ?? 'Starting…'} onCancel={() => cancel(paper.id)} book={isBook || isPrev} />
       ) : (
         <div role="radiogroup" aria-label="Templates" className={`grid gap-5 sm:grid-cols-2 ${isBook ? 'lg:grid-cols-5' : 'lg:grid-cols-3'}`}>
           {TEMPLATES.map((t, i) => {
@@ -95,11 +103,11 @@ export function TemplateStep({ paper }: { paper: Paper }) {
             <Button size="lg" icon={<PenLine size={18} />} onClick={() => setView(paper.id, 'editor')} disabled={generating}>Keep current text</Button>
           )}
           <Button
-            variant="accent" size="lg" disabled={!paper.photos.length || generating}
+            variant="accent" size="lg" disabled={(!paper.photos.length && !paper.docs?.length) || generating}
             icon={generating ? <Loader2 size={18} className="animate-spin" /> : <Sparkles size={18} />}
             onClick={() => generate(paper.id)}
           >
-            {generating ? (isBook ? 'Writing…' : 'Reading…') : isBook ? (paper.sections.length ? 'New questions with AI' : 'Create paper from book') : paper.sections.length ? 'Read photos again with AI' : 'Create paper with AI'}
+            {generating ? (isBook || isPrev ? 'Making…' : 'Reading…') : isBook ? (paper.sections.length ? 'New questions with AI' : 'Create paper from book') : isPrev ? (paper.sections.length ? 'Make it again' : 'Create new paper') : paper.sections.length ? 'Read photos again with AI' : 'Create paper with AI'}
           </Button>
         </div>
       </div>
@@ -139,6 +147,38 @@ function Scanning({ paper, message, onCancel, book }: { paper: Paper; message: s
         <p className="mt-6 text-xs text-ink-400"><span className="font-semibold tabular-nums text-ink-600 dark:text-ink-200" aria-hidden>{secs}s</span> · usually 10–30 seconds per paper</p>
         <Button variant="ghost" size="sm" className="mt-3" icon={<X size={14} />} onClick={onCancel}>Stop</Button>
       </div>
+    </div>
+  )
+}
+
+const PREV_OPTIONS = [
+  { v: 'shuffle', icon: Shuffle, title: 'Shuffle only', hi: 'वही प्रश्न, नया क्रम', d: 'Same questions in a new order (MCQ options and match columns mixed too).' },
+  { v: 'new', icon: FilePlus2, title: 'All new questions', hi: 'सभी नए प्रश्न', d: 'Same pattern and marks, every question replaced with a new one of the same type.' },
+  { v: 'mix', icon: Blend, title: 'Mix old & new', hi: 'कुछ पुराने, कुछ नए', d: 'Keeps about half the old questions and replaces the rest.' },
+] as const
+
+function PreviousOptions({ paper }: { paper: Paper }) {
+  const updatePaper = useStore((s) => s.updatePaper)
+  const action = paper.previous?.action ?? 'new'
+  return (
+    <div role="radiogroup" aria-label="What to do with the old paper" className="grid gap-4 sm:grid-cols-3">
+      {PREV_OPTIONS.map((o, i) => {
+        const sel = action === o.v
+        return (
+          <motion.button
+            key={o.v} role="radio" aria-checked={sel} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.06 }}
+            whileHover={{ y: -3 }} whileTap={{ scale: 0.98 }}
+            onClick={() => updatePaper(paper.id, (p) => ({ ...p, previous: { action: o.v } }))}
+            className={`relative rounded-3xl p-5 text-left ring-2 transition ${sel ? 'bg-ink-800 text-white ring-ink-800 shadow-xl dark:bg-ink-500 dark:ring-ink-500' : 'bg-white ring-ink-100 hover:ring-ink-300 dark:bg-white/5 dark:ring-white/10'}`}
+          >
+            <span className={`mb-3 grid h-12 w-12 place-items-center rounded-2xl ${sel ? 'bg-white/15' : 'bg-marigold-soft text-marigold'}`}><o.icon size={24} aria-hidden /></span>
+            <span className="block text-lg font-semibold">{o.title}</span>
+            <span className={`block text-sm ${sel ? 'text-white/80' : 'text-ink-500'}`} lang="hi">{o.hi}</span>
+            <span className={`mt-2 block text-sm ${sel ? 'text-white/90' : 'text-ink-600 dark:text-ink-300'}`}>{o.d}</span>
+            {sel && <CheckCircle2 className="absolute right-4 top-4" size={22} aria-hidden />}
+          </motion.button>
+        )
+      })}
     </div>
   )
 }

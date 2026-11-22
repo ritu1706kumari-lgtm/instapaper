@@ -120,6 +120,14 @@ async function paperToBlocks(paper: Paper): Promise<(Paragraph | Table)[]> {
       }))
     }
 
+    if (s.passage) {
+      s.passage.split(/\n+/).forEach((para) => out.push(new Paragraph({
+        indent: { left: 480 }, spacing: { after: 80 }, alignment: AlignmentType.JUSTIFIED,
+        border: { top: { style: BorderStyle.SINGLE, size: 6, color: '000000', space: 4 }, bottom: { style: BorderStyle.SINGLE, size: 6, color: '000000', space: 4 }, left: { style: BorderStyle.SINGLE, size: 6, color: '000000', space: 6 }, right: { style: BorderStyle.SINGLE, size: 6, color: '000000', space: 6 } },
+        children: runs(para, ctx),
+      })))
+    }
+
     if (s.type === 'match') {
       const pairs = s.pairs ?? []
       const w = Math.round(CONTENT_W * 0.65)

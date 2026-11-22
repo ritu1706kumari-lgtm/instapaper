@@ -31,6 +31,7 @@ Transcribe it EXACTLY into JSON. Rules:
      marks: only if marks are written next to that single question, else "".
      needsDiagram: true if the question has a drawn figure, map, table image or picture.
    - pairs: for "match" sections, the left and right column items in the SAME order they are written (do not solve them).
+   - passage: if the section has a reading passage, poem extract, case study or source text, put that text here; else "".
 4. Mathematics: write maths in LaTeX between single dollar signs, e.g. $\\frac{3}{4}$, $x^2 + 5x$, $\\sqrt{49}$, $25^\\circ$, $\\times$, $\\div$.
    Chemistry formulas/equations: $\\ce{H2SO4}$, $\\ce{2H2 + O2 -> 2H2O}$. Plain words stay outside dollars.
 5. Choices written inline like "bathing / sleeping" stay as they are.
@@ -54,6 +55,7 @@ const SCHEMA = {
         properties: {
           number: { type: 'STRING' },
           title: { type: 'STRING' },
+          passage: { type: 'STRING' },
           marks: { type: 'STRING' },
           type: { type: 'STRING', enum: ['list', 'mcq', 'match', 'truefalse', 'fill', 'long'] },
           questions: {
@@ -84,7 +86,7 @@ const SCHEMA = {
 
 const JSON_SHAPE_HINT = `JSON shape:
 {"header":{"school":"","exam":"","className":"","subject":"","time":"","maxMarks":"","instructions":[]},
- "sections":[{"number":"","title":"","marks":"","type":"list|mcq|match|truefalse|fill|long",
+ "sections":[{"number":"","title":"","passage":"","marks":"","type":"list|mcq|match|truefalse|fill|long",
    "questions":[{"text":"","options":[],"orText":"","marks":"","needsDiagram":false}],
    "pairs":[{"left":"","right":""}]}]}`
 
@@ -202,13 +204,14 @@ async function withTimeout<T>(ms: number, fn: (signal: AbortSignal) => Promise<T
 export interface GeminiSetup { model: string; style: number; thinking: string | null }
 const THINKING = ['minimal', 'low', null] as const
 
-export async function geminiCall(key: string, setup: GeminiSetup, images: string[], timeoutMs = 100_000, note = '', prompt = PROMPT): Promise<unknown> {
+export async function geminiCall(key: string, setup: GeminiSetup, images: string[], timeoutMs = 100_000, note = '', prompt = PROMPT, texts: string[] = []): Promise<unknown> {
   const parts: object[] = [{ text: (setup.style >= 2 ? `${prompt}\n\n${JSON_SHAPE_HINT}` : prompt) + (note ? `\n\n${note}` : '') }]
   images.forEach((d, i) => {
     const [meta, data] = d.split(',')
     if (images.length > 1) parts.push({ text: `Page ${i + 1}:` })
     parts.push({ inline_data: { mime_type: meta.match(/data:(.*?);/)?.[1] ?? 'image/jpeg', data } })
   })
+  texts.forEach((t, i) => parts.push({ text: `Word document ${i + 1} (text):\n-----\n${t}\n-----` }))
   // Copy-typing needs no deep reasoning: keep "thinking" minimal for speed.
   const gc = { ...(generationConfig(setup.style) ?? {}), ...(setup.thinking ? { thinkingConfig: { thinkingLevel: setup.thinking } } : {}) }
   return withTimeout(timeoutMs, async (signal) => {
@@ -233,7 +236,7 @@ export async function geminiCall(key: string, setup: GeminiSetup, images: string
 /*  Groq (OpenAI-compatible) fallback                                  */
 /* ------------------------------------------------------------------ */
 
-export async function groqCall(key: string, model: string, images: string[], prompt = PROMPT): Promise<unknown> {
+export async function groqCall(key: string, model: string, images: string[], prompt = PROMPT, texts: string[] = []): Promise<unknown> {
   if (images.length > 5) throw new AIError('Groq can read at most 5 photos per paper.', 'other')
   const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
@@ -245,7 +248,7 @@ export async function groqCall(key: string, model: string, images: string[], pro
       response_format: { type: 'json_object' },
       messages: [{
         role: 'user',
-        content: [{ type: 'text', text: `${prompt}\n\n${JSON_SHAPE_HINT}` }, ...images.map((url) => ({ type: 'image_url', image_url: { url } }))],
+        content: [{ type: 'text', text: `${prompt}\n\n${JSON_SHAPE_HINT}${texts.map((t, i) => `\n\nWord document ${i + 1} (text):\n${t}`).join('')}` }, ...images.map((url) => ({ type: 'image_url', image_url: { url } }))],
       }],
     }),
   })
@@ -265,7 +268,12 @@ export async function groqCall(key: string, model: string, images: string[], pro
 /*  Paper from book chapters                                           */
 /* ------------------------------------------------------------------ */
 
-export type PatternType = 'mcq' | 'fill' | 'truefalse' | 'match' | 'oneword' | 'short' | 'long'
+export type PatternType =
+  | 'mcq' | 'fill' | 'truefalse' | 'match' | 'oneword' | 'short' | 'long'
+  | 'solve' | 'wordproblem' | 'construct' | 'prove'
+  | 'reason' | 'diagram' | 'numerical' | 'assertion' | 'casebased'
+  | 'comprehension' | 'grammar' | 'letter' | 'essay' | 'story'
+  | 'map' | 'source'
 export interface PatternRow { type: PatternType; count: number; marks: number }
 export interface BookRequest {
   pattern: PatternRow[]
@@ -279,14 +287,33 @@ export interface BookRequest {
   variation: number
 }
 
-export const PATTERN_TYPES: Record<PatternType, { label: string; ai: string }> = {
-  mcq: { label: 'Multiple choice (MCQ)', ai: 'multiple-choice questions, each with exactly 4 options and one correct answer (type "mcq")' },
-  fill: { label: 'Fill in the blanks', ai: 'fill-in-the-blank sentences, each with one blank written as ____ (type "fill")' },
-  truefalse: { label: 'True / False', ai: 'true-or-false statements, a mix of true and false ones (type "truefalse")' },
-  match: { label: 'Match the following', ai: 'match-the-following pairs; give exactly that many pairs in "pairs", with the right column jumbled so it does NOT line up with the left (type "match", questions [])' },
-  oneword: { label: 'One word / very short', ai: 'very-short-answer questions answerable in one word or one line (type "list")' },
-  short: { label: 'Short answer', ai: 'short-answer questions needing 2–4 lines (type "list")' },
-  long: { label: 'Long answer', ai: 'long-answer questions needing a detailed answer (type "long")' },
+const AR_OPTIONS = '["Both A and R are true and R is the correct explanation of A", "Both A and R are true but R is not the correct explanation of A", "A is true but R is false", "A is false but R is true"]'
+
+/** What each question type means for the AI (the server only accepts these). */
+export const PATTERN_TYPES: Record<PatternType, { ai: string }> = {
+  mcq: { ai: 'multiple-choice questions, each with exactly 4 options and one correct answer (type "mcq")' },
+  fill: { ai: 'fill-in-the-blank sentences, each with one blank written as ____ (type "fill")' },
+  truefalse: { ai: 'true-or-false statements, a mix of true and false ones (type "truefalse")' },
+  match: { ai: 'match-the-following pairs; give exactly that many pairs in "pairs", with the right column jumbled so it does NOT line up with the left (type "match", questions [])' },
+  oneword: { ai: 'very-short-answer questions answerable in one word or one line (type "list")' },
+  short: { ai: 'short-answer questions needing 2–4 lines (type "list")' },
+  long: { ai: 'long-answer questions needing a detailed answer (type "long")' },
+  solve: { ai: 'calculation sums to solve (numbers, fractions, equations, expressions — whatever these pages teach), maths in LaTeX (type "list")' },
+  wordproblem: { ai: 'word problems (short real-life story sums) that need working, based on these pages (type "list")' },
+  construct: { ai: 'construction / drawing questions, e.g. "Construct a triangle…", "Draw a line segment of 6 cm…" (type "list")' },
+  prove: { ai: '"Prove that / Show that" questions (type "list")' },
+  reason: { ai: '"Give reasons" questions, each a statement asking why (type "list")' },
+  diagram: { ai: 'questions asking the student to draw and/or label a diagram from the chapter (type "list")' },
+  numerical: { ai: 'numerical problems with given values and units to calculate (type "list")' },
+  assertion: { ai: `Assertion–Reason questions: text = "Assertion (A): … Reason (R): …" and options exactly ${AR_OPTIONS} (type "mcq")` },
+  casebased: { ai: 'ONE case-study passage (4–8 sentences, based on the chapter) written in the section\'s "passage" field, followed by exactly that many questions about it (type "list")' },
+  comprehension: { ai: 'ONE unseen reading passage (120–200 words, age-appropriate, theme related to the chapter) written in the section\'s "passage" field, followed by exactly that many questions about it (type "list")' },
+  grammar: { ai: 'grammar items on the grammar taught in these pages (e.g. tenses, parts of speech, articles; for Hindi संधि, समास, मुहावरे, पर्यायवाची) — one item each with a clear instruction (type "list")' },
+  letter: { ai: 'letter / application writing tasks, each giving the situation and who to write to (type "long")' },
+  essay: { ai: 'essay / paragraph writing tasks; each gives a topic (related to the chapter or the student\'s life) and a word limit (type "long")' },
+  story: { ai: 'story-writing tasks, each with an outline, hints or a beginning (type "long")' },
+  map: { ai: 'map-work questions, e.g. "On an outline map of India, locate and label…" (type "list")' },
+  source: { ai: 'ONE source passage (from or based on the chapter) written in the section\'s "passage" field, followed by exactly that many questions about it (type "list")' },
 }
 
 export const fmtMark = (n: number) => (Number.isInteger(n) ? String(n) : n % 1 === 0.5 ? `${Math.floor(n) || ''}½` : String(n))
@@ -310,7 +337,10 @@ export function validBook(x: unknown): BookRequest | null {
 
 export function bookPrompt(b: BookRequest): string {
   const total = b.pattern.reduce((n, r) => n + r.count * r.marks, 0)
-  const sections = b.pattern.map((r, i) => `  Section ${i + 1}: exactly ${r.count} ${PATTERN_TYPES[r.type].ai}. marks = "${rowMarks(r)}".`).join('\n')
+  const PASSAGE = ['casebased', 'comprehension', 'source']
+  const sections = b.pattern.map((r, i) => PASSAGE.includes(r.type)
+    ? `  Section ${i + 1}: ${PATTERN_TYPES[r.type].ai.replace('exactly that many', `exactly ${r.count}`)}. marks = "${rowMarks(r)}".`
+    : `  Section ${i + 1}: exactly ${r.count} ${PATTERN_TYPES[r.type].ai}. marks = "${rowMarks(r)}".`).join('\n')
   const source = {
     book: 'Use ONLY questions printed in the exercises / questions of these pages. You may convert a book question into the requested type (e.g. turn a fact into a fill-in-the-blank) but do not invent new topics.',
     mixed: 'Prefer questions printed in the book exercises. If there are not enough of a type, write new ones based ONLY on the content of these pages.',
@@ -339,6 +369,34 @@ Return ONLY the JSON.`
 }
 
 /* ------------------------------------------------------------------ */
+/*  New paper from a previous year paper                               */
+/* ------------------------------------------------------------------ */
+
+export function previousPrompt(action: 'new' | 'mix'): string {
+  const what = action === 'new'
+    ? 'Replace EVERY question with a NEW question of the same type, same topic area and same difficulty. Do not reuse any old question. In maths, change the numbers and situations. In match-the-following, make new pairs.'
+    : 'In each section keep about HALF of the questions exactly as they are, and replace the other half with NEW questions of the same type, topic area and difficulty (in maths, change the numbers). Mix the order of the questions within each section.'
+  return `You are an experienced Indian school teacher.
+The photos and/or Word document text are a PREVIOUS exam question paper (photos may be in any order — use the heading and question numbers to understand the order).
+Create a NEW question paper for the same class and subject with EXACTLY the same structure:
+same sections in the same order, same section instructions, same number of questions in every section, same marks, and the same header
+(school, exam, className, subject, time, maxMarks, instructions — copy them from the old paper).
+
+${what}
+
+Rules:
+1. Keep the language of the old paper (Hindi stays in Devanagari, English in English, mixed stays mixed).
+2. Output one section per main question / section: number (as in the old paper), title (the instruction), passage (reading passage /
+   case study text if the section has one — write a NEW passage when replacing that section's questions), marks (exactly as in the old paper,
+   without brackets), type ("mcq" | "match" | "fill" | "truefalse" | "long" | "list"), questions (each WITHOUT its number; blanks as ____;
+   MCQ options without (a)/(b) labels; orText for an "OR" alternative), pairs for match sections (right column jumbled).
+3. A main question that is one task with no sub-parts (e.g. "Write an essay on…") goes in title with questions [].
+4. Mathematics in LaTeX between single dollar signs, e.g. $\\frac{3}{4}$, $x^2$, $\\sqrt{49}$; chemistry like $\\ce{H2SO4}$.
+5. Do not include answers. needsDiagram true only if a question needs a figure.
+Return ONLY the JSON.`
+}
+
+/* ------------------------------------------------------------------ */
 /*  Orchestration                                                      */
 /* ------------------------------------------------------------------ */
 
@@ -363,7 +421,7 @@ export function validSetup(h: unknown): GeminiSetup | null {
 type ErrLog = { model: string; kind: string; msg: string }[]
 
 /** Find a model + request style that works (starting from the remembered one) and run it. */
-async function runGemini(key: string, images: string[], s: AIConfig, note: string, timeLeft: () => number, errors: ErrLog, onProgress: Progress, prompt = PROMPT) {
+async function runGemini(key: string, images: string[], s: AIConfig, note: string, timeLeft: () => number, errors: ErrLog, onProgress: Progress, prompt = PROMPT, texts: string[] = []) {
   const start = remembered ?? s.hint ?? null
   const forced = s.geminiModel && s.geminiModel !== 'auto' ? s.geminiModel : null
   const queue: string[] = [...new Set([...(forced ? [forced] : []), ...(start ? [start.model] : []), ...FAST_GEMINI_MODELS, ...FALLBACK_GEMINI_MODELS])]
@@ -390,7 +448,7 @@ async function runGemini(key: string, images: string[], s: AIConfig, note: strin
       // A one-page paper takes ~5–20 s on a fast model; don't let one slow model hold everyone up.
       const limit = Math.min(prompt === PROMPT ? (attempts === 1 ? 60_000 : 45_000) : 110_000, timeLeft() - 5_000)
       try {
-        const raw = await geminiCall(key, setup, images, limit, note, prompt)
+        const raw = await geminiCall(key, setup, images, limit, note, prompt, texts)
         console.log(`[ai] ${model} think=${setup.thinking} style=${style} ok in ${Date.now() - t0}ms`)
         remembered = setup
         return { raw, setup }
@@ -469,9 +527,16 @@ export function mergePages(input: any[]): any {
 }
 
 /** Try Gemini (fast path: remembered setup, all pages in parallel), then Groq. */
-export async function extractRaw(images: string[], s: AIConfig, onProgress: Progress = () => {}, book?: BookRequest | null): Promise<ExtractRawResult> {
-  const prompt = book ? bookPrompt(book) : PROMPT
-  if (!images.length) throw new AIError('Add at least one photo of the paper first.', 'other')
+export interface TaskOptions { texts?: string[]; extra?: string; previous?: 'new' | 'mix' | null }
+
+export async function extractRaw(images: string[], s: AIConfig, onProgress: Progress = () => {}, book?: BookRequest | null, opts: TaskOptions = {}): Promise<ExtractRawResult> {
+  const texts = opts.texts ?? []
+  const base = book ? bookPrompt(book) : opts.previous ? previousPrompt(opts.previous) : PROMPT
+  const prompt = opts.extra?.trim()
+    ? `${base}\n\nThe teacher's extra instructions (follow them, as long as the output stays in the JSON format above):\n«${opts.extra.trim().slice(0, 600)}»`
+    : base
+  const oneCall = !!book || !!opts.previous || texts.length > 0 || images.length <= 1
+  if (!images.length && !texts.length) throw new AIError('Add at least one photo or file first.', 'other')
   if (!s.geminiKey && !s.groqKey) throw new AIError('No AI key is configured.', 'key')
   const errors: ErrLog = []
   const started = Date.now()
@@ -481,9 +546,9 @@ export async function extractRaw(images: string[], s: AIConfig, onProgress: Prog
   if (s.geminiKey) {
     const key = s.geminiKey
     try {
-      if (images.length === 1 || book) {
-        onProgress(book ? 'Writing your paper from the chapter…' : 'Reading the handwriting…')
-        const { raw, setup } = await runGemini(key, images, s, '', timeLeft, errors, onProgress, prompt)
+      if (oneCall) {
+        onProgress(book ? 'Writing your paper from the chapter…' : opts.previous ? 'Making a new paper from the old one…' : 'Reading the paper…')
+        const { raw, setup } = await runGemini(key, images, s, '', timeLeft, errors, onProgress, prompt, texts)
         return { raw, provider: prettyModel(setup.model), setup, ms: Date.now() - started }
       }
       // Several pages: read them all at the same time, then join.
@@ -494,7 +559,7 @@ export async function extractRaw(images: string[], s: AIConfig, onProgress: Prog
         const note = k === 0
           ? `This is one of ${n} photos of the paper (the photos may be out of order). Transcribe ONLY this photo. Fill header fields only if the paper heading is on this photo, otherwise leave them "". Always fill "number" for each main question exactly as written. If this photo starts with sub-questions that continue a main question from another page (no main question number/heading at the top), put them in a FIRST section with number "", title "" and marks "".`
           : `This is one of ${n} photos of the paper (the photos may be out of order). Transcribe ONLY this photo. Fill header fields only if the paper heading is on this photo, otherwise leave them "". Always fill "number" for each main question exactly as written. If this photo starts with sub-questions that continue a main question from another page (no main question number/heading at the top), put them in a FIRST section with number "", title "" and marks "".`
-        const r = await runGemini(key, [img], s, note, timeLeft, errors, onProgress)
+        const r = await runGemini(key, [img], s, note, timeLeft, errors, onProgress, prompt)
         done++
         onProgress(`Read ${done} of ${n} pages…`)
         return r
@@ -508,7 +573,7 @@ export async function extractRaw(images: string[], s: AIConfig, onProgress: Prog
   if (s.groqKey) {
     try {
       onProgress('Trying the backup AI (Groq)…')
-      return { raw: await groqCall(s.groqKey, s.groqModel || 'meta-llama/llama-4-scout-17b-16e-instruct', images.slice(0, 5), prompt), provider: 'Groq' }
+      return { raw: await groqCall(s.groqKey, s.groqModel || 'meta-llama/llama-4-scout-17b-16e-instruct', images.slice(0, 5), prompt, texts), provider: 'Groq' }
     } catch (e) {
       if (e instanceof TypeError) throw new AIError('No internet connection. Check your network and try again.', 'network')
       errors.push({ model: 'groq', kind: (e as AIError).kind ?? 'other', msg: (e as Error).message })

@@ -6,6 +6,7 @@ import { PaperTabs, Stepper, TopBar } from './components/Shell'
 import { PhotosStep } from './components/PhotosStep'
 import { TemplateStep } from './components/TemplateStep'
 import { EditorStep } from './components/EditorStep'
+import { Home } from './components/Home'
 import { SettingsDialog } from './components/SettingsDialog'
 import { Toasts } from './components/ui'
 import { PaperView } from './components/PaperView'
@@ -56,19 +57,22 @@ export default function App() {
   const hydrate = useStore((s) => s.hydrate)
   const paper = useActivePaper()
   const view = useStore((s) => s.views[paper.id] ?? (paper.sections.length ? 'editor' : 'photos'))
+  const screen = useStore((s) => s.screen)
   useTheme()
-  useEffect(() => { window.scrollTo({ top: 0, behavior: 'smooth' }) }, [paper.id, view])
+  useEffect(() => { window.scrollTo({ top: 0, behavior: 'smooth' }) }, [paper.id, view, screen])
   useEffect(() => { hydrate() }, [hydrate])
 
   return (
     <MotionConfig reducedMotion="user">
       <div className="min-h-full grain">
         <TopBar />
-        {hydrated ? (
+        {hydrated && screen === 'home' ? (
+          <main id="main" tabIndex={-1} className="outline-none"><Home /></main>
+        ) : hydrated ? (
           <>
             <PaperTabs />
             <div className="mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-3 px-4 pb-2 pt-4 sm:px-6">
-              <Stepper paperId={paper.id} view={view} book={paper.mode === 'book'} />
+              <Stepper paperId={paper.id} view={view} mode={paper.mode} />
             </div>
             <main id="main" tabIndex={-1} className="px-4 pb-24 pt-4 outline-none sm:px-6">
               <AnimatePresence mode="wait">

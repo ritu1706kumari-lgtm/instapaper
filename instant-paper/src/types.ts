@@ -29,6 +29,8 @@ export interface Section {
   /** As printed, e.g. "5" or "2½ × 8 = 20". */
   marks: string
   type: SectionType
+  /** Reading passage / case study / source shown above the questions. */
+  passage?: string
   questions: Question[]
   pairs?: MatchPair[]
 }
@@ -68,8 +70,14 @@ export interface Paper {
   /** Set A/B/C shuffle options for this paper. */
   sets?: SetOptions
   /** 'handwritten' = type out a teacher's paper; 'book' = create a paper from textbook pages. */
-  mode?: 'handwritten' | 'book'
+  mode?: 'handwritten' | 'book' | 'previous'
   book?: BookSettings
+  /** Previous-year paper: what to do with it. */
+  previous?: { action: 'shuffle' | 'new' | 'mix' }
+  /** Extra instructions for the AI, typed by the teacher. */
+  extra?: string
+  /** Text of uploaded Word files (sent to the AI with the photos). */
+  docs?: { id: string; name: string; text: string }[]
   updatedAt: number
 }
 
@@ -85,9 +93,18 @@ export interface Settings {
   theme: 'light' | 'dark' | 'system'
 }
 
-export type PatternType = 'mcq' | 'fill' | 'truefalse' | 'match' | 'oneword' | 'short' | 'long'
+export type PatternType =
+  | 'mcq' | 'fill' | 'truefalse' | 'match' | 'oneword' | 'short' | 'long'
+  | 'solve' | 'wordproblem' | 'construct' | 'prove'
+  | 'reason' | 'diagram' | 'numerical' | 'assertion' | 'casebased'
+  | 'comprehension' | 'grammar' | 'letter' | 'essay' | 'story'
+  | 'map' | 'source'
+export type SubjectKind = 'general' | 'maths' | 'science' | 'english' | 'hindi' | 'sst' | 'evs' | 'computer'
 export interface PatternRow { id: string; type: PatternType; count: number; marks: number }
 export interface BookSettings {
+  subject?: SubjectKind
+  /** True once the teacher changed the pattern by hand (so we never overwrite it). */
+  touched?: boolean
   pattern: PatternRow[]
   difficulty: 'easy' | 'mixed' | 'hard'
   source: 'book' | 'mixed' | 'new'

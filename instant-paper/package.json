@@ -21,7 +21,9 @@
     "jspdf": "^4.2.1",
     "katex": "^0.19.1",
     "lucide-react": "^1.77.0",
+    "mammoth": "^1.13.0",
     "motion": "^14.14.0",
+    "pdfjs-dist": "^6.5.438",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "zustand": "^5.1.0"

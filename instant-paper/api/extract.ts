@@ -46,7 +46,7 @@ export async function POST(req: Request) {
   const ip = (req.headers.get('x-forwarded-for') ?? 'unknown').split(',')[0].trim()
   if (rateLimited(ip)) return json({ error: 'Too many papers from this device in the last hour. Please wait a little.', kind: 'quota' }, 429)
 
-  let body: { images?: unknown; code?: unknown; hint?: unknown; book?: unknown }
+  let body: { images?: unknown; code?: unknown; hint?: unknown; book?: unknown; texts?: unknown; extra?: unknown; previous?: unknown }
   try { body = await req.json() } catch { return json({ error: 'Bad request.', kind: 'other' }, 400) }
 
   const book = body.book ? validBook(body.book) : null
@@ -58,7 +58,10 @@ export async function POST(req: Request) {
   }
 
   const images = Array.isArray(body.images) ? body.images.filter((x): x is string => typeof x === 'string' && /^data:image\/(jpeg|png|webp);base64,/.test(x)) : []
-  if (!images.length || images.length > 12) return json({ error: 'Send between 1 and 12 photos.', kind: 'other' }, 400)
+  const texts = Array.isArray(body.texts) ? body.texts.filter((x): x is string => typeof x === 'string' && !!x.trim()).slice(0, 5).map((t) => t.slice(0, 40_000)) : []
+  if ((!images.length && !texts.length) || images.length > 15) return json({ error: 'Send between 1 and 15 photos (or a Word file).', kind: 'other' }, 400)
+  const extra = typeof body.extra === 'string' ? body.extra.slice(0, 600) : ''
+  const previous = body.previous === 'new' || body.previous === 'mix' ? body.previous : null
 
   try {
     const res = await extractRaw(images, {
@@ -68,7 +71,7 @@ export async function POST(req: Request) {
       groqModel: process.env.GROQ_MODEL,
       timeBudgetMs: 250_000,
       hint: validSetup(body.hint),
-    }, undefined, book)
+    }, undefined, book, { texts, extra, previous })
     return json(res)
   } catch (e) {
     const err = e as AIError

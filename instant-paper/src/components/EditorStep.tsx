@@ -63,8 +63,8 @@ export function EditorStep({ paper }: { paper: Paper }) {
           </motion.span>
         )}
         <div className="flex gap-2">
-          {paper.mode === 'book' && paper.photos.length > 0 && (
-            <Button variant="accent" icon={<RefreshCw size={16} />} title="Same pattern, a different set of questions" onClick={() => { if (!confirm('Replace the current questions with a new set from the chapter (same pattern)? Your edits to this paper will be lost.')) return; setView(paper.id, 'template'); void generate(paper.id) }}>New questions</Button>
+          {(paper.mode === 'book' || paper.mode === 'previous') && (paper.photos.length > 0 || !!paper.docs?.length) && (
+            <Button variant="accent" icon={<RefreshCw size={16} />} title="Same pattern, a different set of questions" onClick={() => { if (!confirm('Replace the current questions with a new set (same pattern)? Your edits to this paper will be lost.')) return; setView(paper.id, 'template'); void generate(paper.id) }}>New questions</Button>
           )}
           <Button variant="primary" icon={<Printer size={16} />} onClick={() => setExportKind('print')} disabled={!paper.sections.length}>Print</Button>
           <Button icon={<FileDown size={16} />} onClick={() => setExportKind('pdf')} disabled={!paper.sections.length}>PDF</Button>

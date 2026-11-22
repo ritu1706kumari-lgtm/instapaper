@@ -125,6 +125,10 @@
 }
 .diagram-badge:hover, .diagram-badge:focus-visible { background: #fde68a; outline: 2px solid #ca8a04; }
 
+/* Reading passage / case study / source */
+.p-passage { border: 1px solid var(--ink); padding: 6px 10px; margin: 2px 0 6px 24px; text-align: justify; white-space: pre-wrap; line-height: 1.45; }
+.p-passage .ed { display: block; }
+
 /* Empty marks: invisible on the page, appears only when you point at the heading (never printed). */
 .add-marks { opacity: 0; transition: opacity .15s; font-weight: 400; font-size: 0.85em; }
 .p-sec-head:hover .add-marks, .add-marks:focus-within { opacity: 1; }

@@ -202,6 +202,17 @@ function SectionCard({ s, index, count, label, open, onToggle, onChange, onMove,
                 </select>
               </label>
 
+              {s.passage !== undefined ? (
+                <label className="flex flex-col gap-1 text-xs font-semibold text-ink-600 dark:text-ink-300">
+                  <span className="flex items-center justify-between">Passage / case / source text
+                    <button type="button" className="rounded px-1 text-red-600 hover:bg-red-50" onClick={() => onChange({ passage: undefined })}>Remove passage</button>
+                  </span>
+                  <textarea className={`${inputCls} min-h-24 [field-sizing:content]`} value={s.passage} onFocus={remember} onChange={(e) => onChange({ passage: e.target.value })} placeholder="Type or paste the passage the questions are based on" />
+                </label>
+              ) : s.type !== 'match' && (
+                <Button size="sm" variant="ghost" className="h-7" icon={<Plus size={13} />} onClick={() => onChange({ passage: '' })}>Add a reading passage / case</Button>
+              )}
+
               {s.type === 'match' ? (
                 <div className="space-y-2">
                   <div className="grid grid-cols-[20px_1fr_1fr_32px] gap-2 text-[11px] font-semibold uppercase tracking-wide text-ink-400"><span /><span>Column A</span><span>Column B</span><span /></div>

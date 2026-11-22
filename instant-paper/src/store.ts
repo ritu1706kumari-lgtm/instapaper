@@ -4,6 +4,7 @@ import type { MatchPair, Paper, PaperHeader, Question, Section, Settings } from 
 import { blankPaper, samplePaper } from './lib/sample'
 import { checkServerAI, extractPaper, type ServerAIStatus } from './lib/ai'
 import { uid } from './lib/id'
+import { makeSets } from './lib/shuffle'
 import { defaultBook, enforcePattern, patternTotal, fmtMark } from './lib/pattern'
 
 export type View = 'photos' | 'template' | 'editor'
@@ -19,6 +20,9 @@ interface State {
   progress: Record<string, string>
   toasts: Toast[]
   settingsOpen: boolean
+  screen: 'home' | 'paper'
+  goHome: () => void
+  openPaper: (id: string) => void
   serverAI: ServerAIStatus & { checked: boolean }
 
   hydrate: () => Promise<void>
@@ -27,7 +31,7 @@ interface State {
   toast: (kind: Toast['kind'], text: string) => void
   dismissToast: (id: string) => void
 
-  addPaper: (p?: Paper, mode?: 'handwritten' | 'book') => string
+  addPaper: (p?: Paper, mode?: 'handwritten' | 'book' | 'previous') => string
   removePaper: (id: string) => void
   duplicatePaper: (id: string) => void
   setActive: (id: string) => void
@@ -65,6 +69,9 @@ export const useStore = create<State>((set, get) => ({
   progress: {},
   toasts: [],
   settingsOpen: false,
+  screen: 'home',
+  goHome: () => set({ screen: 'home' }),
+  openPaper: (id) => set({ activeId: id, screen: 'paper' }),
   serverAI: { available: false, needsCode: false, checked: false },
 
   hydrate: async () => {
@@ -101,8 +108,9 @@ export const useStore = create<State>((set, get) => ({
       ...blankPaper(settings.schoolName, settings.schoolLogo),
       mode,
       ...(mode === 'book' ? { book: defaultBook(), name: 'Paper from book' } : {}),
+      ...(mode === 'previous' ? { previous: { action: 'new' as const }, name: 'From old paper' } : {}),
     }
-    set((s) => ({ papers: [...s.papers, paper], activeId: paper.id, views: { ...s.views, [paper.id]: p ? 'editor' : 'photos' } }))
+    set((s) => ({ papers: [...s.papers, paper], activeId: paper.id, screen: 'paper', views: { ...s.views, [paper.id]: p ? 'editor' : 'photos' } }))
     return paper.id
   },
   removePaper: (id) => set((s) => {
@@ -138,6 +146,7 @@ export const useStore = create<State>((set, get) => ({
   generate: async (id) => {
     const paper = get().papers.find((p) => p.id === id)
     if (!paper) return false
+    if (!paper.photos.length && !paper.docs?.length) { get().toast('error', 'Add photos or a file first.'); return false }
     const { settings } = get()
     get().updatePaper(id, (p) => ({ ...p, status: 'generating', error: undefined }))
     const setProgress = (msg: string) => set((s) => ({ progress: { ...s.progress, [id]: msg } }))
@@ -152,7 +161,17 @@ export const useStore = create<State>((set, get) => ({
         className: paper.header.className, subject: paper.header.subject, chapters: book.chapters,
         variation: Math.floor(Math.random() * 1_000_000),
       } : null
-      const res = await extractPaper(paper.photos.map((p) => p.dataUrl), settings, get().serverAI, setProgress, ctrl.signal, req)
+      const action = paper.mode === 'previous' ? (paper.previous?.action ?? 'new') : null
+      const res = await extractPaper(paper.photos.map((p) => p.dataUrl), settings, get().serverAI, setProgress, ctrl.signal, req, {
+        texts: (paper.docs ?? []).map((d) => d.text),
+        extra: paper.extra,
+        previous: action === 'new' || action === 'mix' ? action : null,
+      })
+      if (action === 'shuffle') {
+        // Same questions, new order: shuffle questions, MCQ options and match columns inside every section.
+        const tmp = { ...paper, id: uid(), sections: res.sections }
+        res.sections = makeSets(tmp, { count: 2, shuffleQuestions: true, shuffleOptions: true, shuffleMatch: true, shuffleSections: false })[1].sections
+      }
       let shortBy: string[] = []
       if (book) {
         const hindi = book.language === 'hi' || (book.language === 'same' && /[\u0900-\u097F]/.test(JSON.stringify(res.sections).slice(0, 3000)))
@@ -181,7 +200,7 @@ export const useStore = create<State>((set, get) => ({
       set((s) => ({ views: { ...s.views, [id]: 'editor' } }))
       const diagrams = res.sections.flatMap((s) => s.questions).filter((q) => q.needsDiagram).length
       if (shortBy.length) get().toast('info', `The chapter pages didn’t have enough material for: ${shortBy.join(', ')}. Add more pages, or type the rest in the editor.`)
-      get().toast('success', `Paper ready in ${res.seconds}s (${isBook ? 'written' : 'read'} by ${res.provider}).${diagrams ? ` ${diagrams} question(s) need a diagram — look for the yellow badges.` : ' Check it once and print!'}`)
+      get().toast('success', `Paper ready in ${res.seconds}s (${isBook || action ? 'made' : 'read'} by ${res.provider}).${diagrams ? ` ${diagrams} question(s) need a diagram — look for the yellow badges.` : ' Check it once and print!'}`)
       return true
     } catch (e) {
       const msg = (e as Error).message

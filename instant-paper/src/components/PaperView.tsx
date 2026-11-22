@@ -131,6 +131,12 @@ function SectionBlock({ s, i, t, editable, start, onSection, onQuestion, onPair,
         </div>
       )}
 
+      {s.passage !== undefined && (s.passage || editable) && (
+        <div className="p-passage">
+          <Editable value={s.passage} onChange={(v) => onSection({ passage: v })} label={`passage for ${label}`} placeholder="Type or paste the passage here" editable={editable} multiline />
+        </div>
+      )}
+
       {s.type === 'match' ? (
         <table className="p-match">
           <tbody>

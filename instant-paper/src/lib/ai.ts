@@ -1,6 +1,6 @@
 import type { PaperHeader, Section, SectionType, Settings } from '../types'
 import { uid } from './id'
-import { AIError, extractRaw, validSetup, type BookRequest, type GeminiSetup, type Progress } from './aiCore'
+import { AIError, extractRaw, validSetup, type BookRequest, type GeminiSetup, type Progress, type TaskOptions } from './aiCore'
 
 export { AIError, listGeminiModels, prettyModel } from './aiCore'
 
@@ -51,10 +51,10 @@ async function fitImages(images: string[]): Promise<string[]> {
   return out
 }
 
-async function extractViaServer(images: string[], code: string, onProgress: Progress, signal?: AbortSignal, book?: BookRequest | null) {
+async function extractViaServer(images: string[], code: string, onProgress: Progress, signal?: AbortSignal, book?: BookRequest | null, opts: TaskOptions = {}) {
   onProgress('Uploading photos…')
-  const body = JSON.stringify({ images: await fitImages(images), code, hint: loadHint(), ...(book ? { book } : {}) })
-  onProgress(book ? 'Writing your paper from the chapter…' : 'Reading handwriting with the school AI…')
+  const body = JSON.stringify({ images: await fitImages(images), code, hint: loadHint(), ...(book ? { book } : {}), texts: opts.texts ?? [], extra: opts.extra ?? '', previous: opts.previous ?? null })
+  onProgress(book ? 'Writing your paper from the chapter…' : opts.previous ? 'Making a new paper from the old one…' : 'Reading the paper with the school AI…')
   let res: Response
   try {
     const timeout = AbortSignal.timeout(295_000)
@@ -79,8 +79,8 @@ async function extractViaServer(images: string[], code: string, onProgress: Prog
 /*  Main entry                                                         */
 /* ------------------------------------------------------------------ */
 
-export async function extractPaper(images: string[], s: Settings, server: ServerAIStatus, onProgress: Progress = () => {}, signal?: AbortSignal, book?: BookRequest | null): Promise<ExtractResult> {
-  if (!images.length) throw new AIError('Add at least one photo of the paper first.', 'other')
+export async function extractPaper(images: string[], s: Settings, server: ServerAIStatus, onProgress: Progress = () => {}, signal?: AbortSignal, book?: BookRequest | null, opts: TaskOptions = {}): Promise<ExtractResult> {
+  if (!images.length && !opts.texts?.length) throw new AIError('Add at least one photo or file first.', 'other')
   // A personal key (Settings → Advanced) always wins; otherwise use the school's shared AI.
   const personal = !!(s.geminiKey || s.groqKey)
   // 1600px is plenty for handwriting and uploads/reads much faster.
@@ -90,10 +90,10 @@ export async function extractPaper(images: string[], s: Settings, server: Server
   let res: { raw: unknown; provider: string; ms?: number }
   if (personal) {
     const cancelled = new Promise<never>((_, rej) => signal?.addEventListener('abort', () => rej(new AIError('Cancelled.', 'other'))))
-    const r = await Promise.race([extractRaw(images, { ...s, hint: loadHint() }, onProgress, book), cancelled])
+    const r = await Promise.race([extractRaw(images, { ...s, hint: loadHint() }, onProgress, book, opts), cancelled])
     saveHint(r.setup)
     res = r
-  } else if (server.available) res = await extractViaServer(images, s.accessCode ?? '', onProgress, signal, book)
+  } else if (server.available) res = await extractViaServer(images, s.accessCode ?? '', onProgress, signal, book, opts)
   else throw new AIError('AI is not set up yet. Ask the administrator to add the school AI key, or add your own key in Settings.', 'key')
   return { ...normalize(res.raw), provider: res.provider, seconds: Math.max(1, Math.round((Date.now() - t0) / 1000)) }
 }
@@ -141,6 +141,7 @@ export function normalize(raw: any): { header: PaperHeader; sections: Section[] 
     return {
       id: uid(),
       title: finalTitle,
+      passage: str(s?.passage) || undefined,
       marks: str(s?.marks).replace(/^\(|\)$/g, ''),
       type: pairs && type !== 'match' && !questions.length ? 'match' : type,
       questions,

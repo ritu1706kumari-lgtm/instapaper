@@ -28,7 +28,7 @@ export const safeName = (s: string) => s.replace(/[^\p{L}\p{M}\p{N}\- _.·]+/gu,
 const PAGE_W_MM = 210, PAGE_H_MM = 297, MX = 13, MY = 12
 const CONTENT_W_MM = PAGE_W_MM - 2 * MX, CONTENT_H_MM = PAGE_H_MM - 2 * MY
 /** Blocks that must never be split across two pages. */
-const ATOMIC = '.p-header, .p-student, .p-instructions, .p-sec-head, .q-item, .p-match tr, .q-img, .p-empty'
+const ATOMIC = '.p-passage, .p-header, .p-student, .p-instructions, .p-sec-head, .q-item, .p-match tr, .q-img, .p-empty'
 
 /** Find y-positions (in CSS px, relative to el) where it is safe to start a new page. */
 function pageCuts(el: HTMLElement, pagePx: number): number[] {
