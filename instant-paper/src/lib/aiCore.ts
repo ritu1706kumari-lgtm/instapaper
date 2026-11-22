@@ -106,8 +106,12 @@ export type Progress = (msg: string) => void
 /* ------------------------------------------------------------------ */
 
 const GEMINI = 'https://generativelanguage.googleapis.com/v1beta'
-/** Aliases Google keeps pointing at its current Flash models, so they never go stale. */
-const FALLBACK_GEMINI_MODELS = ['gemini-flash-latest', 'gemini-flash-lite-latest']
+/**
+ * Fastest first: Flash-Lite models are built for low-latency data extraction (~350 tokens/s),
+ * which is exactly "type out this paper". Full Flash models are the accuracy fallback.
+ */
+const FAST_GEMINI_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-flash-lite-latest']
+const FALLBACK_GEMINI_MODELS = ['gemini-3.8-flash', 'gemini-flash-latest']
 
 let cachedModels: { key: string; list: string[] } | null = null
 
@@ -125,7 +129,7 @@ export async function listGeminiModels(key: string): Promise<string[]> {
   const rank = (n: string) => {
     let r = 0
     if (/flash/.test(n)) r += 100
-    if (/lite/.test(n)) r -= 40
+    if (/lite/.test(n)) r += 40 // fastest
     if (/pro/.test(n)) r -= 60 // Pro models have tiny or no free quota
     if (/preview|exp/.test(n)) r -= 20
     if (/latest/.test(n)) r += 5
@@ -144,7 +148,7 @@ async function geminiError(res: Response): Promise<AIError> {
   if (res.status === 400 && /api key/i.test(msg)) return new AIError('The Gemini API key is not valid.', 'key')
   if (res.status === 403) return new AIError('This Gemini API key is not allowed to use the API. Create a new key in Google AI Studio.', 'key')
   if (res.status === 429) return new AIError('Free daily/minute limit reached for this model.', 'quota')
-  if (res.status === 404 || /not found|not supported|no longer available|deprecated|retired/i.test(msg)) return new AIError(`Model unavailable: ${msg}`, 'model', suggested)
+  if (res.status === 404 || /no longer available|deprecated|retired|shut ?down/i.test(msg) || (res.status !== 400 && /not found|not supported/i.test(msg))) return new AIError(`Model unavailable: ${msg}`, 'model', suggested)
   if (res.status === 400) return new AIError(`Request format not accepted: ${msg}`, 'request')
   if (res.status >= 500) return new AIError('Google AI is busy right now.', 'quota')
   return new AIError(msg || `Gemini error ${res.status}`, 'other')
@@ -188,20 +192,25 @@ async function withTimeout<T>(ms: number, fn: (signal: AbortSignal) => Promise<T
   }
 }
 
-export async function geminiCall(key: string, model: string, images: string[], style = 0, timeoutMs = 100_000): Promise<unknown> {
-  const parts: object[] = [{ text: style >= 2 ? `${PROMPT}\n\n${JSON_SHAPE_HINT}` : PROMPT }]
+/** A model + request style that is known to work, remembered to skip trial-and-error next time. */
+export interface GeminiSetup { model: string; style: number; thinking: string | null }
+const THINKING = ['minimal', 'low', null] as const
+
+export async function geminiCall(key: string, setup: GeminiSetup, images: string[], timeoutMs = 100_000, note = ''): Promise<unknown> {
+  const parts: object[] = [{ text: (setup.style >= 2 ? `${PROMPT}\n\n${JSON_SHAPE_HINT}` : PROMPT) + (note ? `\n\n${note}` : '') }]
   images.forEach((d, i) => {
     const [meta, data] = d.split(',')
-    parts.push({ text: `Page ${i + 1}:` })
+    if (images.length > 1) parts.push({ text: `Page ${i + 1}:` })
     parts.push({ inline_data: { mime_type: meta.match(/data:(.*?);/)?.[1] ?? 'image/jpeg', data } })
   })
-  const gc = generationConfig(style)
+  // Copy-typing needs no deep reasoning: keep "thinking" minimal for speed.
+  const gc = { ...(generationConfig(setup.style) ?? {}), ...(setup.thinking ? { thinkingConfig: { thinkingLevel: setup.thinking } } : {}) }
   return withTimeout(timeoutMs, async (signal) => {
-    const res = await fetch(`${GEMINI}/models/${model}:generateContent`, {
+    const res = await fetch(`${GEMINI}/models/${setup.model}:generateContent`, {
       method: 'POST',
       signal,
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
-      body: JSON.stringify({ contents: [{ role: 'user', parts }], ...(gc ? { generationConfig: gc } : {}) }),
+      body: JSON.stringify({ contents: [{ role: 'user', parts }], ...(Object.keys(gc).length ? { generationConfig: gc } : {}) }),
     })
     if (!res.ok) throw await geminiError(res)
     const data = await res.json()
@@ -250,57 +259,141 @@ export async function groqCall(key: string, model: string, images: string[]): Pr
 /*  Orchestration                                                      */
 /* ------------------------------------------------------------------ */
 
-export interface AIConfig { geminiKey?: string; groqKey?: string; geminiModel?: string; groqModel?: string; timeBudgetMs?: number }
+export interface AIConfig {
+  geminiKey?: string; groqKey?: string; geminiModel?: string; groqModel?: string; timeBudgetMs?: number
+  /** Setup that worked last time (sent back by the browser) so we can go straight to it. */
+  hint?: GeminiSetup | null
+}
 
-/** Try Gemini models (best free first), then Groq. Returns the raw JSON the model produced. */
-export async function extractRaw(images: string[], s: AIConfig, onProgress: Progress = () => {}): Promise<{ raw: unknown; provider: string }> {
+export interface ExtractRawResult { raw: unknown; provider: string; setup?: GeminiSetup; ms?: number }
+
+let remembered: GeminiSetup | null = null
+
+export function validSetup(h: unknown): GeminiSetup | null {
+  const x = h as GeminiSetup
+  if (!x || typeof x.model !== 'string' || !/^gemini-[\w.-]{1,60}$/.test(x.model)) return null
+  if (![0, 1, 2, 3].includes(x.style)) return null
+  if (!(THINKING as readonly (string | null)[]).includes(x.thinking)) return null
+  return { model: x.model, style: x.style, thinking: x.thinking }
+}
+
+type ErrLog = { model: string; kind: string; msg: string }[]
+
+/** Find a model + request style that works (starting from the remembered one) and run it. */
+async function runGemini(key: string, images: string[], s: AIConfig, note: string, timeLeft: () => number, errors: ErrLog, onProgress: Progress) {
+  const start = remembered ?? s.hint ?? null
+  const forced = s.geminiModel && s.geminiModel !== 'auto' ? s.geminiModel : null
+  const queue: string[] = [...new Set([...(forced ? [forced] : []), ...(start ? [start.model] : []), ...FAST_GEMINI_MODELS, ...FALLBACK_GEMINI_MODELS])]
+  const tried = new Set<string>()
+  let listed = false
+  let attempts = 0
+  while (attempts < 10 && timeLeft() > 15_000) {
+    if (!queue.length) {
+      if (listed) break
+      listed = true
+      try { queue.push(...(await listGeminiModels(key)).slice(0, 4)) } catch (e) { if (e instanceof AIError && e.kind === 'key') throw e }
+      continue
+    }
+    const model = queue.shift()!
+    if (tried.has(model)) continue
+    tried.add(model)
+    const same = start && start.model === model
+    let style = same ? start.style : 0
+    let ti = same ? THINKING.indexOf(start.thinking as never) : 0
+    while (style < 4 && ti < THINKING.length && timeLeft() > 15_000) {
+      attempts++
+      const setup: GeminiSetup = { model, style, thinking: THINKING[ti] }
+      const t0 = Date.now()
+      // A one-page paper takes ~5–20 s on a fast model; don't let one slow model hold everyone up.
+      const limit = Math.min(attempts === 1 ? 60_000 : 45_000, timeLeft() - 5_000)
+      try {
+        const raw = await geminiCall(key, setup, images, limit, note)
+        console.log(`[ai] ${model} think=${setup.thinking} style=${style} ok in ${Date.now() - t0}ms`)
+        remembered = setup
+        return { raw, setup }
+      } catch (e) {
+        console.log(`[ai] ${model} think=${setup.thinking} style=${style} failed in ${Date.now() - t0}ms: ${(e as Error).message.slice(0, 160)}`)
+        if (e instanceof AIError && e.kind === 'key') throw e
+        if (e instanceof TypeError) throw new AIError('No internet connection. Check your network and try again.', 'network')
+        const err = e as AIError
+        errors.push({ model, kind: err.kind ?? 'other', msg: err.message })
+        if (err.kind === 'request' && /think/i.test(err.message)) { ti++; continue } // drop/lower the thinking setting
+        if (err.kind === 'request' || err.kind === 'parse') { style++; continue } // try a simpler request style
+        if (err.kind === 'model' && err.suggested && !tried.has(err.suggested)) {
+          // Keep trying the fast Lite models first; slot Google's suggestion in right after them.
+          const at = /lite/.test(err.suggested) ? 0 : Math.max(0, queue.findIndex((m) => !/lite/.test(m)))
+          queue.splice(at === -1 ? queue.length : at, 0, err.suggested)
+        }
+        if (remembered?.model === model) remembered = null
+        break
+      }
+    }
+    onProgress('Trying another AI model…')
+  }
+  throw new AIError('gemini failed', 'other')
+}
+
+/** Join pages that were read separately; a page that starts mid-section continues the previous section. */
+/* eslint-disable @typescript-eslint/no-explicit-any */
+export function mergePages(raws: any[]): any {
+  const header: Record<string, unknown> = { ...(raws[0]?.header ?? {}) }
+  for (const r of raws.slice(1)) {
+    for (const [k, v] of Object.entries(r?.header ?? {})) {
+      const empty = !header[k] || (Array.isArray(header[k]) && !(header[k] as unknown[]).length)
+      if (empty && v && (!Array.isArray(v) || v.length)) header[k] = v
+    }
+  }
+  const sections: any[] = []
+  raws.forEach((r, i) => (Array.isArray(r?.sections) ? r.sections : []).forEach((sec: any, j: number) => {
+    const prev = sections[sections.length - 1]
+    if (i > 0 && j === 0 && prev && !String(sec?.title ?? '').trim() && !String(sec?.marks ?? '').trim()) {
+      prev.questions = [...(prev.questions ?? []), ...(sec.questions ?? [])]
+      if (sec.pairs?.length) prev.pairs = [...(prev.pairs ?? []), ...sec.pairs]
+    } else sections.push({ ...sec })
+  }))
+  return { header, sections }
+}
+
+/** Try Gemini (fast path: remembered setup, all pages in parallel), then Groq. */
+export async function extractRaw(images: string[], s: AIConfig, onProgress: Progress = () => {}): Promise<ExtractRawResult> {
   if (!images.length) throw new AIError('Add at least one photo of the paper first.', 'other')
   if (!s.geminiKey && !s.groqKey) throw new AIError('No AI key is configured.', 'key')
-  const errors: { model: string; kind: string; msg: string }[] = []
-
+  const errors: ErrLog = []
   const started = Date.now()
   const budget = s.timeBudgetMs ?? 230_000
   const timeLeft = () => budget - (Date.now() - started)
 
   if (s.geminiKey) {
-    let models: string[] = []
+    const key = s.geminiKey
     try {
-      onProgress('Finding the best free model…')
-      models = await listGeminiModels(s.geminiKey)
-    } catch (e) {
-      if (e instanceof AIError && e.kind === 'key') throw e
-    }
-    const queue = [...new Set([...(s.geminiModel && s.geminiModel !== 'auto' ? [s.geminiModel] : []), ...models.slice(0, 4), ...FALLBACK_GEMINI_MODELS])]
-    const tried = new Set<string>()
-    let attempts = 0
-    while (queue.length && attempts < 8 && timeLeft() > 20_000) {
-      const model = queue.shift()!
-      if (tried.has(model)) continue
-      tried.add(model)
-      // Try request styles from newest to simplest until this model accepts one.
-      for (let style = 0; style < 4 && timeLeft() > 20_000; style++) {
-        attempts++
-        try {
-          onProgress(`Reading handwriting with ${prettyModel(model)}…`)
-          const raw = await geminiCall(s.geminiKey, model, images, style, Math.min(100_000, timeLeft() - 5_000))
-          return { raw, provider: prettyModel(model) }
-        } catch (e) {
-          if (e instanceof AIError && e.kind === 'key') throw e
-          if (e instanceof TypeError) throw new AIError('No internet connection. Check your network and try again.', 'network')
-          const err = e as AIError
-          errors.push({ model, kind: err.kind ?? 'other', msg: err.message })
-          if (err.kind === 'request' || err.kind === 'parse') continue // try a simpler request style
-          if (err.kind === 'model' && err.suggested && !tried.has(err.suggested)) queue.unshift(err.suggested)
-          break // move on to the next model
-        }
+      if (images.length === 1) {
+        onProgress('Reading the handwriting…')
+        const { raw, setup } = await runGemini(key, images, s, '', timeLeft, errors, onProgress)
+        return { raw, provider: prettyModel(setup.model), setup, ms: Date.now() - started }
       }
+      // Several pages: read them all at the same time, then join.
+      const n = images.length
+      let done = 0
+      onProgress(`Reading ${n} pages at once…`)
+      const results = await Promise.all(images.map(async (img, k) => {
+        const note = k === 0
+          ? `This photo is page 1 of ${n}. Transcribe only what is on this page.`
+          : `This photo is page ${k + 1} of ${n}. The heading is on page 1, so leave header fields "" unless they are written here. If this page starts with questions that continue a section from the previous page (no new section heading), put them in a FIRST section with title "" and marks "". Transcribe only what is on this page.`
+        const r = await runGemini(key, [img], s, note, timeLeft, errors, onProgress)
+        done++
+        onProgress(`Read ${done} of ${n} pages…`)
+        return r
+      }))
+      return { raw: mergePages(results.map((r) => r.raw)), provider: prettyModel(results[0].setup.model), setup: results[0].setup, ms: Date.now() - started }
+    } catch (e) {
+      if (e instanceof AIError && (e.kind === 'key' || e.kind === 'network')) throw e
     }
   }
 
   if (s.groqKey) {
     try {
       onProgress('Trying the backup AI (Groq)…')
-      return { raw: await groqCall(s.groqKey, s.groqModel || 'meta-llama/llama-4-scout-17b-16e-instruct', images), provider: 'Groq' }
+      return { raw: await groqCall(s.groqKey, s.groqModel || 'meta-llama/llama-4-scout-17b-16e-instruct', images.slice(0, 5)), provider: 'Groq' }
     } catch (e) {
       if (e instanceof TypeError) throw new AIError('No internet connection. Check your network and try again.', 'network')
       errors.push({ model: 'groq', kind: (e as AIError).kind ?? 'other', msg: (e as Error).message })
